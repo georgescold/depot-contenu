@@ -1,10 +1,10 @@
 import type { NextRequest } from "next/server";
-import type { Content, Publication } from "@/lib/types";
+import type { Content, Folder, Publication } from "@/lib/types";
 import { getAdminClient } from "@/lib/supabase/admin";
 import { ApiError, dbFail, handle, json, readObject } from "@/lib/api/http";
-import { accountLabel, candidatesForFolder, loadAccounts, loadFolderCtx, resolveFolder } from "@/lib/api/resolve";
+import { accountLabel, candidatesForFolder, deleteFolders, loadAccounts, loadFolderCtx, resolveFolder } from "@/lib/api/resolve";
 import { appOrigin, getContentRow, loadContentFull } from "@/lib/api/serialize";
-import { listContentObjects, removeObjects } from "@/lib/api/storage";
+import { purgeObjects } from "@/lib/api/storage";
 import { optBool, optFormat, optText, requireUuid } from "@/lib/api/validate";
 
 type Ctx = RouteContext<"/api/v1/contents/[id]">;
@@ -40,10 +40,12 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
     const [folders, accounts] = await Promise.all([loadFolderCtx(sb), loadAccounts(sb)]);
     const warnings: string[] = [];
     let createdFolders: string[] = [];
+    let createdRows: Folder[] = [];
     if (body.folder !== undefined && body.folder !== null && body.folder !== "") {
       const { folder, created } = await resolveFolder(sb, folders, body.folder, {
         create: optBool(body, "create_folders"),
       });
+      createdRows = created;
       createdFolders = created.map((f) => folders.path(f.id));
       if (folder.id !== current.folder_id) {
         patch.folder_id = folder.id;
@@ -70,7 +72,10 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
     let content: Content = current;
     if (Object.keys(patch).length) {
       const { data, error } = await sb.from("contents").update(patch).eq("id", id).select("*").single();
-      if (error) throw dbFail(error, "mise à jour du contenu");
+      if (error) {
+        if (createdRows.length) await deleteFolders(sb, createdRows);
+        throw dbFail(error, "mise à jour du contenu");
+      }
       content = data as Content;
     }
 
@@ -79,7 +84,10 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
   });
 }
 
-/** DELETE /api/v1/contents/:id : supprime les fichiers du bucket puis le contenu. */
+/**
+ * DELETE /api/v1/contents/:id : supprime d'abord la ligne (publications et fichiers en cascade),
+ * puis, au mieux, les objets du stockage (ceux des fichiers + tout le préfixe <id>/).
+ */
 export async function DELETE(req: NextRequest, ctx: Ctx) {
   return handle(req, async () => {
     const id = requireUuid((await ctx.params).id, "id du contenu");
@@ -89,13 +97,11 @@ export async function DELETE(req: NextRequest, ctx: Ctx) {
     const { data: assets, error } = await sb.from("assets").select("storage_path").eq("content_id", id);
     if (error) throw dbFail(error, "lecture des fichiers");
     const paths = ((assets ?? []) as { storage_path: string }[]).map((a) => a.storage_path);
-    // On ramasse aussi les fichiers envoyés mais jamais enregistrés (envoi interrompu).
-    paths.push(...(await listContentObjects(sb, id)));
-    const removed = await removeObjects(sb, paths);
 
     const { error: de } = await sb.from("contents").delete().eq("id", id);
     if (de) throw dbFail(de, "suppression du contenu");
 
-    return json({ deleted: true, id, title: content.title, removed_files: removed });
+    const { removed, warnings } = await purgeObjects(paths, id);
+    return json({ deleted: true, id, title: content.title, removed_files: removed, warnings });
   });
 }

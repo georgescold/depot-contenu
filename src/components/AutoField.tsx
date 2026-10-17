@@ -8,11 +8,13 @@ const base =
 
 /**
  * Champ texte qui s'enregistre tout seul (après une courte pause de frappe, et en quittant le champ).
- * Ne se fait pas écraser par un rechargement des données pendant qu'on tape.
+ * - ne se fait pas écraser par un rechargement des données pendant qu'on tape ;
+ * - si l'enregistrement échoue (onCommit renvoie false), le texte reste affiché avec « Non enregistré · Réessayer ».
  */
 export function AutoField({
   value,
   onCommit,
+  onLocalChange,
   multiline,
   delay = 700,
   className,
@@ -20,15 +22,19 @@ export function AutoField({
   ...props
 }: {
   value: string;
-  onCommit: (v: string) => void;
+  onCommit: (v: string) => void | Promise<boolean | void>;
+  /** appelé à chaque frappe (ex. pour copier le texte en cours) */
+  onLocalChange?: (v: string) => void;
   multiline?: boolean;
   delay?: number;
   minRows?: number;
 } & Omit<InputHTMLAttributes<HTMLInputElement & HTMLTextAreaElement>, "value" | "onChange">) {
   const [local, setLocal] = useState(value);
   const [focused, setFocused] = useState(false);
+  const [failed, setFailed] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const committed = useRef(value);
+  const inflight = useRef<string | null>(null);
   const localRef = useRef(value);
   const commitRef = useRef(onCommit);
   const areaRef = useRef<HTMLTextAreaElement>(null);
@@ -38,20 +44,30 @@ export function AutoField({
 
   // valeur externe (rechargement, autre membre) : on la prend si on n'est pas en train d'écrire
   useEffect(() => {
-    if (focused || timer.current) return;
+    if (focused || timer.current || failed || inflight.current !== null) return;
     committed.current = value;
     localRef.current = value;
     setLocal(value);
-  }, [value, focused]);
+  }, [value, focused, failed]);
 
   const flush = () => {
     if (timer.current) clearTimeout(timer.current);
     timer.current = null;
     const v = localRef.current;
-    if (v !== committed.current) {
-      committed.current = v;
-      commitRef.current(v);
-    }
+    if (v === committed.current || v === inflight.current) return;
+    inflight.current = v;
+    Promise.resolve(commitRef.current(v)).then(
+      (ok) => {
+        if (inflight.current === v) inflight.current = null;
+        if (ok === false) return setFailed(true);
+        committed.current = v;
+        setFailed(false);
+      },
+      () => {
+        if (inflight.current === v) inflight.current = null;
+        setFailed(true);
+      },
+    );
   };
 
   // enregistre ce qui reste en quittant la page
@@ -70,6 +86,7 @@ export function AutoField({
       const v = e.target.value;
       localRef.current = v;
       setLocal(v);
+      onLocalChange?.(v);
       if (timer.current) clearTimeout(timer.current);
       timer.current = setTimeout(flush, delay);
     },
@@ -80,16 +97,25 @@ export function AutoField({
     },
   };
 
-  if (multiline) {
-    return (
-      <textarea
-        ref={areaRef}
-        rows={minRows}
-        {...(props as object)}
-        {...handlers}
-        className={cn(base, "resize-none overflow-hidden py-2.5 leading-relaxed", className)}
-      />
-    );
-  }
-  return <input {...props} {...handlers} className={cn(base, "h-10", className)} />;
+  const field = multiline ? (
+    <textarea
+      ref={areaRef}
+      rows={minRows}
+      {...(props as object)}
+      {...handlers}
+      className={cn(base, "resize-none overflow-hidden py-2.5 leading-relaxed", failed && "border-danger", className)}
+    />
+  ) : (
+    <input {...props} {...handlers} className={cn(base, "h-10", failed && "border-danger", className)} />
+  );
+
+  if (!failed) return field;
+  return (
+    <div className="w-full">
+      {field}
+      <button type="button" onClick={flush} className="mt-1 text-xs font-medium text-danger underline">
+        Non enregistré · Réessayer
+      </button>
+    </div>
+  );
 }

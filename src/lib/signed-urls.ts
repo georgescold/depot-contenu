@@ -1,15 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { STORAGE_BUCKET } from "./constants";
-import { supabase } from "./supabase/browser";
+import { authedFetch } from "./client-fetch";
 
 /**
- * URLs signées pour lire les fichiers du bucket privé.
+ * URLs signées pour lire les fichiers (Backblaze B2, bucket privé).
  * Les demandes sont regroupées (un seul appel pour toute une grille) et mises en cache ~50 min.
  */
 
-const TTL = 3600;
+const TTL_MS = 50 * 60 * 1000;
 const cache = new Map<string, { url: string; exp: number }>();
 let queue = new Map<string, ((url: string | null) => void)[]>();
 let timer: ReturnType<typeof setTimeout> | null = null;
@@ -25,15 +24,21 @@ async function flush() {
   queue = new Map();
   timer = null;
   const paths = [...batch.keys()];
-  if (!paths.length) return;
-  const { data } = await supabase().storage.from(STORAGE_BUCKET).createSignedUrls(paths, TTL);
-  const byPath = new Map<string, string>();
-  for (const row of data ?? []) {
-    if (row.path && row.signedUrl) byPath.set(row.path, row.signedUrl);
+  const urls: Record<string, string> = {};
+  for (let i = 0; i < paths.length; i += 200) {
+    try {
+      const res = await authedFetch<{ urls: Record<string, string> }>("/api/storage/sign", {
+        method: "POST",
+        body: JSON.stringify({ paths: paths.slice(i, i + 200) }),
+      });
+      Object.assign(urls, res.urls);
+    } catch (e) {
+      console.error(e);
+    }
   }
   for (const [path, cbs] of batch) {
-    const url = byPath.get(path) ?? null;
-    if (url) cache.set(path, { url, exp: Date.now() + (TTL - 600) * 1000 });
+    const url = urls[path] ?? null;
+    if (url) cache.set(path, { url, exp: Date.now() + TTL_MS });
     cbs.forEach((cb) => cb(url));
   }
 }
@@ -49,6 +54,10 @@ export function getSignedUrl(path: string): Promise<string | null> {
   });
 }
 
+/** Abonnés par chemin : prévenus quand une URL est oubliée (erreur de lecture) pour la redemander. */
+const listeners = new Map<string, Set<() => void>>();
+
+/** URL signée d'un fichier, renouvelée avant expiration et après une erreur de lecture. */
 export function useSignedUrl(path: string | null | undefined): string | null {
   const [state, setState] = useState<{ path: string | null | undefined; url: string | null }>(() => ({
     path,
@@ -57,33 +66,49 @@ export function useSignedUrl(path: string | null | undefined): string | null {
   useEffect(() => {
     if (!path) return;
     let alive = true;
-    getSignedUrl(path).then((url) => alive && setState({ path, url }));
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const load = () => {
+      getSignedUrl(path).then((url) => {
+        if (!alive) return;
+        setState({ path, url });
+        const exp = cache.get(path)?.exp;
+        if (timer) clearTimeout(timer);
+        if (exp) timer = setTimeout(load, Math.max(5_000, exp - Date.now() + 1_000));
+      });
+    };
+    load();
+    const set = listeners.get(path) ?? new Set();
+    set.add(load);
+    listeners.set(path, set);
     return () => {
       alive = false;
+      if (timer) clearTimeout(timer);
+      set.delete(load);
     };
   }, [path]);
   return state.path === path ? state.url ?? cached(path) : cached(path);
 }
 
-/**
- * Nom de téléchargement sans accents : Supabase encode deux fois les caractères non ASCII
- * (« Vidéo.mp4 » arriverait en « Vid%C3%A9o.mp4 »).
- */
-export function downloadName(fileName: string): string {
-  return fileName
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
-    .replace(/[^\x20-\x7E]/g, "_");
-}
-
-/** URL qui force le téléchargement avec le bon nom de fichier. */
+/** URL qui force le téléchargement avec le bon nom de fichier (accents compris). */
 export async function getDownloadUrl(path: string, fileName: string): Promise<string | null> {
-  const { data } = await supabase()
-    .storage.from(STORAGE_BUCKET)
-    .createSignedUrl(path, 600, { download: downloadName(fileName) });
-  return data?.signedUrl ?? null;
+  try {
+    const res = await authedFetch<{ urls: Record<string, string> }>("/api/storage/sign", {
+      method: "POST",
+      body: JSON.stringify({ paths: [path], download: fileName }),
+    });
+    return res.urls[path] ?? null;
+  } catch (e) {
+    console.error(e);
+    return null;
+  }
 }
 
+/** Oublie l'URL d'un fichier (expirée, supprimée) ; les écrans qui l'affichent en redemandent une. */
+const lastForget = new Map<string, number>();
 export function forgetSignedUrl(path: string) {
-  cache.delete(path);
+  const had = cache.delete(path);
+  // au plus une nouvelle demande toutes les 30 s par fichier (fichier réellement absent → pas de boucle)
+  const recent = Date.now() - (lastForget.get(path) ?? 0) < 30_000;
+  lastForget.set(path, Date.now());
+  if (had && !recent) listeners.get(path)?.forEach((reload) => reload());
 }

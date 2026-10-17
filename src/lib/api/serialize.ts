@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { ASSET_KIND_LIST, PLATFORMS, STORAGE_BUCKET } from "@/lib/constants";
+import { presignGet } from "@/lib/b2";
+import { ASSET_KIND_LIST, PLATFORMS } from "@/lib/constants";
 import { contentStatus, isLate } from "@/lib/status";
 import type { Account, Asset, AssetKind, Content, Folder, Publication } from "@/lib/types";
 import { ApiError, dbFail } from "./errors";
@@ -121,29 +122,23 @@ export function publicationWarnings(p: { title: string; description: string }, a
 
 const kindOrder = (k: AssetKind) => ASSET_KIND_LIST.indexOf(k);
 
-/**
- * Nom forcé au téléchargement : Supabase encode deux fois les caractères non
- * ASCII du paramètre `download` (« é » → « %C3%A9 »), on reste donc en ASCII.
- * Même transformation que downloadName() de src/lib/signed-urls.ts (client).
- */
-export function asciiDownloadName(name: string): string {
-  return name
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
-    .replace(/[^\x20-\x7E]/g, "_");
-}
-
 export function sortAssets(list: Asset[]): Asset[] {
   return [...list].sort((a, b) => kindOrder(a.kind) - kindOrder(b.kind) || a.position - b.position || a.created_at.localeCompare(b.created_at));
 }
 
-export async function serializeAssets(sb: SupabaseClient, assets: Asset[]) {
-  const bucket = sb.storage.from(STORAGE_BUCKET);
+export async function serializeAssets(assets: Asset[]) {
   return Promise.all(
     sortAssets(assets).map(async (a) => {
-      const { data, error } = await bucket.createSignedUrl(a.storage_path, DOWNLOAD_TTL_SECONDS, {
-        download: a.file_name ? asciiDownloadName(a.file_name) : true,
-      });
+      let downloadUrl: string | null = null;
+      let downloadError: string | undefined;
+      try {
+        downloadUrl = await presignGet(a.storage_path, {
+          download: a.file_name || a.storage_path.split("/").pop(),
+          expires: DOWNLOAD_TTL_SECONDS,
+        });
+      } catch (e) {
+        downloadError = e instanceof Error ? e.message : String(e);
+      }
       return {
         id: a.id,
         kind: a.kind,
@@ -153,8 +148,8 @@ export async function serializeAssets(sb: SupabaseClient, assets: Asset[]) {
         size_bytes: a.size_bytes,
         storage_path: a.storage_path,
         created_at: a.created_at,
-        download_url: data?.signedUrl ?? null,
-        ...(error ? { download_error: error.message } : {}),
+        download_url: downloadUrl,
+        ...(downloadError ? { download_error: downloadError } : {}),
       };
     }),
   );
@@ -203,7 +198,7 @@ export async function loadContentFull(
     created_at: content.created_at,
     updated_at: content.updated_at,
     url: contentUrl(origin, content.id),
-    assets: await serializeAssets(sb, (assetsRes.data ?? []) as Asset[]),
+    assets: await serializeAssets((assetsRes.data ?? []) as Asset[]),
     publications,
     available_accounts: candidatesForFolder(ctx, accounts, content.folder_id).map((c) => serializeAccount(c.account, ctx)),
   };

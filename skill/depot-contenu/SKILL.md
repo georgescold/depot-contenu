@@ -1,111 +1,119 @@
 ---
 name: depot-contenu
-description: Envoie des vidéos, carrousels, miniatures et descriptions dans l'app « Dépôt contenu » (drive/CRM de contenus à poster) et les programme dans son calendrier de publication, via son API par clé. À utiliser dès que l'utilisateur dit « envoie dans le dépôt », « dépose cette vidéo / ce carrousel / ces slides », « mets ça dans Dépôt contenu », « programme ce post », « planifie la publication de… », « ajoute au calendrier de publication », « cale ce reel mardi 18 h », « qu'est-ce que je dois poster aujourd'hui / cette semaine », « qu'est-ce qui est en retard », « marque comme posté », « j'ai publié le post », « crée le dossier projet / sous-projet / angle », « ajoute le compte Instagram du projet », ou mentionne « dépôt contenu », « dépôt vidéo » ou « depot ».
+description: Range des vidéos, reels, carrousels, slides, miniatures et légendes dans l'app « Dépôt contenu » (drive/CRM des contenus à poster) et les programme dans son calendrier de publication, via son CLI. À utiliser quand l'utilisateur dit « envoie / balance / range / mets / dépose … dans le dépôt », « … dans l'angle X / le projet Y », « dépose cette vidéo / mon reel / mon carrousel / mes slides », « programme ce post », « planifie la publication de… », « cale ce reel mardi 18 h », « ajoute au calendrier de publication / au calendrier éditorial / au planning de publication », « qu'est-ce que je dois poster aujourd'hui / cette semaine », « qu'est-ce qui est en retard », « marque comme posté », « j'ai publié le post », « crée l'angle / le sous-projet », « ajoute le compte Instagram du projet », ou cite « Dépôt contenu ». NE PAS utiliser pour un dépôt git (repo, « depot » au sens git, commit, push git, GitHub).
 ---
 
 # Dépôt contenu
 
-L'app range les contenus dans des **dossiers imbriqués** (projet → sous-projet → angle…). Un contenu = un titre, un format
-(`video`, `short`, `carousel`, `photo`, `story`, `other`), des fichiers (`video`, `thumbnail`, `photo` = slides, `other`)
-et **une publication par compte** (date, heure, titre, description, posté oui/non). Les comptes (plateforme + handle) sont
-rattachés à un dossier ; un contenu peut utiliser les comptes de son dossier **et de tous ses parents**.
+Arborescence de **dossiers** (projet → sous-projet → angle…) → **contenus** (titre, format `video|short|carousel|photo|story|other`)
+→ **fichiers** (`video`, `thumbnail` = miniature, `photo` = slides, `other`) + **une publication par compte** (date, heure,
+titre, légende, posté oui/non). Un contenu peut utiliser les comptes de son dossier **et de tous ses parents**.
+L'app ne publie **rien** sur les réseaux : elle range et planifie, l'utilisateur poste puis coche « posté ».
 
-## Lancer le CLI
-
-```bash
-node ~/.claude/skills/depot-contenu/depot.mjs <commande> [options]      # --json pour la réponse brute
-```
-
-(Ci-dessous `depot` = cette commande.) `depot help` liste tout.
-
-## Si la clé manque
-
-Erreur « Clé API non configurée » ou 401 : demande à l'utilisateur de créer une clé dans l'app (**Réglages → Clés API**),
-puis de lancer lui-même (ne lui demande pas de te coller la clé si tu peux l'éviter) :
+## Lancer le CLI (bash et PowerShell)
 
 ```bash
-depot config --url "https://adresse-de-l-app" --key "dpc_…"
+node "$HOME/.claude/skills/depot-contenu/depot.mjs" <commande> [options] --json
 ```
 
-Alternative : variables `DEPOT_API_URL` / `DEPOT_API_KEY`. Vérifie avec `depot me`.
+Ci-dessous `depot` = cette commande. Toujours `--json` pour lire les réponses. Référence complète : [reference.md](reference.md).
 
-## Workflow conseillé
+**Clé absente** (« Clé API non configurée » ou 401) : demande à l'utilisateur de créer une clé dans l'app (**Réglages → Clés API**)
+puis de lancer lui-même `depot config --url "https://adresse-de-l-app" --key -` (il colle la clé). Ne lui demande pas la clé.
 
-1. **Voir l'arborescence et les comptes** : `depot folders`.
-2. **Choisir le bon dossier** (projet / sous-projet / angle). S'il n'existe pas : `depot mkdir "Projet/Sous-projet/Angle"`
-   ou `"create_folders": true` dans le manifest. Les noms sont comparés sans casse ni accents ; séparateur `/` ou `>`.
-   Si un compte manque : `depot account add --folder "Projet" --platform instagram --handle "@moncompte"`.
-3. **Écrire un manifest** (JSON, chemins relatifs au manifest) puis `depot push manifest.json` :
+## Procédure pour déposer un contenu
+
+1. **Date du jour** : `depot me --json` → `app.today` (heure de Paris). Convertis « demain », « mardi », « la semaine pro »
+   en dates absolues et répète-les avec le jour : « mardi 20 octobre 2026 à 18 h ».
+2. **Dossier** : `depot folders --json`. Choisis un dossier **existant** (projet / sous-projet / angle) et ses comptes.
+   Ne mets `"create_folders": true` que si l'utilisateur demande un nouveau dossier ; en cas de doute, **demande**.
+3. **Fichiers** : trouve les exports récents et vérifie qu'ils sont **finis** (taille non nulle et stable) :
+   - PowerShell : `Get-ChildItem "$HOME\Videos","$HOME\Downloads","$HOME\Desktop" -File -Recurse -Depth 2 | Where-Object LastWriteTime -gt (Get-Date).AddDays(-2) | Sort-Object LastWriteTime -Descending | Select-Object -First 20 FullName,Length,LastWriteTime`
+   - bash : `find ~/Videos ~/Downloads ~/Desktop -maxdepth 3 -type f -mtime -2 -printf '%TY-%Tm-%Td %TH:%TM %s %p\n' 2>/dev/null | sort -r | head -20`
+   - stabilité : `node -e "const fs=require('fs'),f=process.argv[1],a=fs.statSync(f).size;setTimeout(()=>{const b=fs.statSync(f).size;console.log(a===b&&a>0?'stable':'export en cours',b)},10000)" "<fichier>"`
+4. **Légendes** : une par plateforme (règles ci-dessous). Lis le brief, le script ou le `.srt` à côté de la vidéo s'il y en a.
+5. **Récapitulatif à faire valider** : dossier, fichiers (type de chacun), dates avec le jour, légende par compte. Attends le « ok ».
+6. **Manifest** : écris-le avec l'outil Write (UTF-8) dans un dossier temporaire, chemins **absolus** avec des `/` :
 
 ```json
 {
   "folder": "Compaatible/Lancement/Angle jalousie",
-  "create_folders": true,
   "title": "Jalousie : 5 signes",
   "format": "carousel",
-  "notes": "Brief, sources, idées de hook…",
-  "files": [ { "path": "./cover.png", "kind": "thumbnail" } ],
-  "dir": "./slides",
+  "notes": "Brief, sources…",
+  "files": [ { "path": "C:/Users/moi/Exports/cover.png", "kind": "thumbnail" } ],
+  "dir": "C:/Users/moi/Exports/slides",
   "publications": [
     { "account": "instagram", "date": "2026-10-20", "time": "18:00", "description": "…" },
-    { "account": "tiktok", "date": "2026-10-21", "description_file": "./caption-tiktok.txt" },
+    { "account": "tiktok", "date": "2026-10-21", "description_file": "C:/Users/moi/Exports/caption-tiktok.txt" },
     { "account": "youtube", "date": "2026-10-22", "time": "17:00", "title": "…", "description": "…" }
   ]
 }
 ```
 
-   - `dir` ajoute toutes les images du dossier (tri naturel : 2 avant 10) comme slides `photo`.
-   - `files` : `{ "path", "kind" }` ; sans `kind`, vidéo → `video`, image → `photo`. La miniature = `thumbnail`.
-   - `account` : `"instagram"` (s'il n'y en a qu'un, sinon le plus proche du dossier), `"@handle"`, `"instagram:@handle"` ou l'id.
-     Erreur 409 « Compte ambigu » → reprends un des choix listés.
-   - Une description **adaptée à chaque plateforme** (voir règles ci-dessous). `description_file` / `title_file` lisent un fichier texte.
-   - Sans date, la publication est créée « à planifier ».
-4. **Donner le lien web** affiché à la fin (`Lien : …/contenus/<id>`) à l'utilisateur, avec un résumé (dossier, fichiers, dates).
+   - `dir` : toutes les images du dossier (png, jpg, jpeg, webp, gif, heic, heif, avif, jfif), tri naturel (2 avant 10),
+     en `photo` ; fichiers cachés et autres formats ignorés (avertissement).
+   - `files` : `{ path, kind }` ; sans `kind`, vidéo → `video`, image → `photo`. La miniature : `"kind": "thumbnail"`.
+   - `account` : `"instagram"` (le compte le plus proche du dossier), `"@handle"`, `"instagram:@handle"` ou l'id.
+     409 « Compte ambigu » : reprends un des `choices`.
+7. **Envoi** : `depot push <manifest> --json`. Au-delà de quelques centaines de Mo, lance-le **en arrière-plan** (la
+   progression s'affiche sur stderr). Ordre : tout est validé, puis contenu créé, fichiers envoyés, publications créées.
+8. **Lien** : donne `url` (page du contenu) avec un résumé : dossier, fichiers, dates avec le jour, `warnings` éventuels.
 
-Le push vérifie tout avant de créer : fichiers présents, taille, dossier, comptes. Si un envoi échoue au milieu, le contenu
-existe déjà : relance seulement `depot upload <id> <fichiers…>`.
+## Reprise après un échec
+
+- **Ne relance jamais `push`** après un échec partiel : ça créerait un doublon. Le JSON d'erreur contient `content_id`,
+  `uploaded`, `remaining`, `failed_file`, `remaining_publications` et `resume_commands` : exécute ces commandes dans l'ordre
+  (`upload <id> …` pour les fichiers restants, puis `schedule …` pour les publications).
+- Doute sur un doublon : `depot list --q "mot du titre" --json` avant de recréer quoi que ce soit.
+- `push --rollback` supprime le contenu si l'envoi échoue (utile quand l'utilisateur préfère tout recommencer).
+- **413** : fichier > 4 Go (ou 0 octet). Propose de compresser :
+  `ffmpeg -i in.mp4 -c:v libx264 -crf 28 -preset slow -c:a aac -b:a 128k out.mp4`, ou de découper.
+- **503 / coupure réseau** : le CLI refait chaque envoi 4 fois (et chaque part de 16 Mo). Si ça échoue encore, attends
+  quelques minutes puis exécute les `resume_commands`. **401** : clé révoquée ou absente (voir plus haut).
 
 ## Autres commandes
 
 ```bash
-depot list [--folder "Projet"] [--status draft|scheduled|late|partial|posted] [--format carousel] [--q "mot"]
-depot get <id>                                   # détail + liens de téléchargement (1 h)
-depot upload <id> video.mp4 cover.png --kind thumbnail   # --kind s'applique à tous les fichiers
-depot schedule <id> --account tiktok --date 2026-10-21 --time 18:00 --description-file caption.txt
-depot schedule <id> --account tiktok --date none # déprogrammer
+depot list [--folder "Projet"] [--status draft|scheduled|late|partial|posted] [--format carousel] [--q "mot"] --json
+depot get <id> --json                                 # détail, ids des fichiers, liens de téléchargement (1 h)
+depot upload <id> "C:/…/video.mp4" "C:/…/cover.png:thumbnail" "C:/…/slides"   # type par fichier : chemin:type
+depot edit <id> [--title …] [--format …] [--notes-file f.txt] [--folder "Projet/Angle"]   # --folder = déplacer
+depot schedule <id> --account tiktok --date 2026-10-21 [--time 18:00] [--description-file caption.txt]
+depot unschedule <id> --account tiktok                # retire la publication de ce compte
 depot posted <id> --account instagram [--url https://lien-du-post] [--undo]
-depot calendar [--from 2026-10-20 --to 2026-10-26] [--folder "Projet"] [--account instagram] [--include-posted]
-depot delete <id> --yes
+depot calendar [--from 2026-10-19 --to 2026-10-25] [--folder "Projet"] [--account instagram] [--include-posted] --json
+depot set-kind <assetId> thumbnail                    # change le type d'un fichier
+depot rm-file <assetId>                               # supprime un fichier (demande confirmation avant)
+depot mkdir "Projet/Sous-projet/Angle" · depot account add --folder "Projet" --platform instagram --handle "@x"
+depot delete <id> --yes                               # suppression définitive : confirmation explicite obligatoire
 ```
 
-- « Qu'est-ce que je dois poster aujourd'hui / cette semaine ? » → `depot calendar --to <date>` : montre d'abord le bloc
-  **EN RETARD** (dates passées non postées), puis les publications à venir, avec titre, compte et lien.
-- « J'ai posté le reel » → `depot posted <id> --account <compte>` (ajoute `--url` si l'utilisateur donne le lien).
-- Pour retrouver un id : `depot list --q "mot du titre"`.
+- « Qu'est-ce que je poste aujourd'hui / cette semaine ? » → `depot calendar --to <date> --json` : d'abord `overdue`
+  (dates passées non postées), puis `publications`, avec titre, compte, légende et lien.
+- « J'ai posté le reel » → `depot posted <id> --account <compte>` (+ `--url` si l'utilisateur donne le lien).
+- Options inconnues refusées (code 2) : ne devine pas d'options, lis `depot help`.
 
 ## Règles d'écriture par plateforme
 
-| Plateforme | Titre | Description (max) | Conseils |
+| Plateforme | Titre | Légende (max) | Conseils |
 |---|---|---|---|
-| YouTube | **≤ 100 caractères**, obligatoire | 5000 | Mots-clés au début ; 3 hashtags max utiles (les 3 premiers s'affichent au-dessus du titre) |
-| Instagram | pas de titre | 2200 | Hook dans la 1ʳᵉ ligne (≈ 125 car. visibles) ; 3 à 5 hashtags ciblés en fin (30 max) |
-| TikTok | pas de titre | 4000 | Court, accrocheur ; 3 à 5 hashtags |
-| Facebook | pas de titre | 63206 | Texte aéré, 1 à 3 hashtags |
-| LinkedIn | pas de titre | 3000 | Accroche en 2 lignes, paragraphes courts, 3 hashtags |
-| X | pas de titre | 280 | 1 ou 2 hashtags au plus |
-| Threads | pas de titre | 500 | Ton conversationnel, 1 hashtag |
-| Pinterest | titre (100) | 500 | Mots-clés descriptifs |
-| Snapchat | pas de titre | 250 | Très court |
+| YouTube | **≤ 100 car.**, obligatoire | 5000 | Mots-clés au début ; 3 hashtags utiles max |
+| Instagram | non | 2200 | Hook en 1ʳᵉ ligne (≈ 125 car. visibles) ; 3 à 5 hashtags ciblés en fin |
+| TikTok | non | 4000 | Court, accrocheur ; 3 à 5 hashtags |
+| Facebook | non | 63206 | Texte aéré, 1 à 3 hashtags |
+| LinkedIn | non | 3000 | Accroche en 2 lignes, paragraphes courts, 3 hashtags |
+| X | non | 280 | 1 ou 2 hashtags au plus |
+| Threads | non | 500 | Ton conversationnel, 1 hashtag |
+| Pinterest | ≤ 100 car. | 500 | Mots-clés descriptifs |
+| Snapchat | non | 250 | Très court |
 
-- Mets le titre seulement là où la plateforme en a un (YouTube, Pinterest) ; ailleurs, tout va dans `description`.
-- L'API renvoie des `warnings` (titre trop long, description trop longue…) : corrige avec `depot schedule … --description-file`.
-- Écris dans la langue du projet ; pas de hashtags inventés hors sujet.
+- Titre seulement sur YouTube et Pinterest ; ailleurs, tout va dans `description`.
+- Lis les `warnings` (longueur, date passée…) et corrige avec `depot schedule … --description-file`.
+- Langue du projet, pas de hashtags hors sujet, pas d'emoji imposé.
 
-## Limites et précautions
+## Précautions
 
-- **50 Mo maximum par fichier** (plan gratuit Supabase). Au-delà, l'envoi est refusé (413) : propose de compresser
-  (ex. `ffmpeg -i in.mp4 -c:v libx264 -crf 28 -preset slow -c:a aac -b:a 128k out.mp4`) ou de découper.
-- **Demande toujours une confirmation explicite avant `depot delete`** (suppression définitive du contenu et de ses fichiers).
-- Dates `AAAA-MM-JJ`, heures `HH:MM` (heure de Paris).
-- Ne publie rien sur les réseaux : l'app ne fait que ranger et planifier ; c'est l'utilisateur qui poste puis coche « posté ».
-- Référence complète de l'API : `docs/API.md` dans le projet de l'app.
+- Confirmation explicite avant `delete` et `rm-file`.
+- Dates `AAAA-MM-JJ`, heures `HH:MM`, heure de Paris.
+- Légendes longues ou avec guillemets : passe par `description_file` (fichier UTF-8 écrit avec Write) plutôt qu'en ligne de commande.

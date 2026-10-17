@@ -4,7 +4,7 @@ import { Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import { FORMATS } from "@/lib/constants";
 import { accountsForFolder, descendantIds, folderColor, folderPath } from "@/lib/folders";
-import { longDate } from "@/lib/format";
+import { longDate, shortDate } from "@/lib/format";
 import { contentStatus, STATUS_INFO } from "@/lib/status";
 import { useData } from "../data/DataProvider";
 import { Thumb } from "../Thumb";
@@ -46,21 +46,19 @@ function ScheduleForm({ date, onClose, folderFilter }: Props) {
     const c = contents.find((x) => x.id === id);
     if (!c) return;
     const opts = accountsForFolder(index, accounts, c.folder_id);
-    // présélection : les comptes pas encore programmés pour ce contenu
-    const free = opts.filter((a) => !c.publications.some((p) => p.account_id === a.id && p.scheduled_date));
-    setPicked((free.length ? free : opts).map((a) => a.id));
+    // présélection : uniquement les comptes ni programmés ni déjà postés (on ne déplace rien sans le vouloir)
+    const free = opts.filter((a) => !c.publications.some((p) => p.account_id === a.id && (p.scheduled_date || p.posted)));
+    setPicked(free.map((a) => a.id));
   };
 
   const submit = async () => {
-    if (!content || !picked.length || !day) return;
+    if (busy || !content || !picked.length || !day) return;
     setBusy(true);
-    await Promise.all(
-      picked.map((accId) =>
-        savePublication(content.id, accId, { scheduled_date: day, scheduled_time: time ? `${time}:00` : null }),
-      ),
-    );
+    // heure vide : on garde l'heure déjà prévue s'il y en a une
+    const patch = time ? { scheduled_date: day, scheduled_time: `${time}:00` } : { scheduled_date: day };
+    const results = await Promise.all(picked.map((accId) => savePublication(content.id, accId, patch)));
     setBusy(false);
-    onClose();
+    if (results.every(Boolean)) onClose();
   };
 
   return (
@@ -133,23 +131,32 @@ function ScheduleForm({ date, onClose, folderFilter }: Props) {
               <Input type="time" value={time} onChange={(e) => setTime(e.target.value)} />
             </Field>
           </div>
-          <Field label="Sur quels comptes ?">
+          <Field label="Sur quels comptes ?" group>
             {options.length ? (
               <div className="flex flex-wrap gap-2">
                 {options.map((a) => {
                   const on = picked.includes(a.id);
+                  const existing = content.publications.find((p) => p.account_id === a.id);
+                  const note = existing?.posted
+                    ? "déjà posté"
+                    : existing?.scheduled_date
+                      ? `prévu le ${shortDate(existing.scheduled_date)}`
+                      : null;
                   return (
                     <button
                       key={a.id}
                       type="button"
                       onClick={() => setPicked((p) => (on ? p.filter((x) => x !== a.id) : [...p, a.id]))}
                       className={cn(
-                        "flex h-10 items-center gap-2 rounded-xl border px-3 text-sm transition",
+                        "flex min-h-10 items-center gap-2 rounded-xl border px-3 py-1.5 text-left text-sm transition",
                         on ? "border-accent bg-accent-soft text-accent" : "border-line text-muted",
                       )}
                     >
                       <PlatformBadge platform={a.platform} size="sm" />
-                      {a.handle || a.platform}
+                      <span>
+                        {a.handle || a.platform}
+                        {note && <span className="block text-[11px] opacity-80">{on ? `${note} → sera déplacé` : note}</span>}
+                      </span>
                     </button>
                   );
                 })}

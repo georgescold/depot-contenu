@@ -10,11 +10,13 @@ import {
   type SelectHTMLAttributes,
   type TextareaHTMLAttributes,
 } from "react";
+import { twMerge } from "tailwind-merge";
 import { PLATFORMS } from "@/lib/constants";
 import type { Platform } from "@/lib/types";
 
+/** Concatène des classes Tailwind ; en cas de conflit (w-full / w-28…), la dernière gagne. */
 export function cn(...parts: (string | false | null | undefined)[]) {
-  return parts.filter(Boolean).join(" ");
+  return twMerge(parts.filter(Boolean).join(" "));
 }
 
 /* ------------------------------------------------------------------ */
@@ -111,23 +113,36 @@ export function Select({ className, children, ...props }: SelectHTMLAttributes<H
   );
 }
 
+/**
+ * Libellé + champ. `group` pour un groupe de boutons/puces : on n'utilise alors pas de <label>
+ * (toucher le libellé ou un espace activerait le premier bouton).
+ */
 export function Field({
   label,
   hint,
   children,
   className,
+  group,
 }: {
   label: ReactNode;
   hint?: ReactNode;
   children: ReactNode;
   className?: string;
+  group?: boolean;
 }) {
-  return (
-    <label className={cn("block space-y-1.5", className)}>
+  const inner = (
+    <>
       <span className="block text-[13px] font-medium text-muted">{label}</span>
       {children}
       {hint && <span className="block text-xs text-muted">{hint}</span>}
-    </label>
+    </>
+  );
+  return group ? (
+    <div role="group" className={cn("block space-y-1.5", className)}>
+      {inner}
+    </div>
+  ) : (
+    <label className={cn("block space-y-1.5", className)}>{inner}</label>
   );
 }
 
@@ -184,7 +199,7 @@ export function Modal({
         </div>
         <div className="overflow-y-auto px-5 pb-4">{children}</div>
         {footer && (
-          <div className="flex justify-end gap-2 border-t border-line px-5 py-3 pb-safe">{footer}</div>
+          <div className="flex justify-end gap-2 border-t border-line px-5 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">{footer}</div>
         )}
       </div>
     </div>

@@ -1,16 +1,7 @@
 "use client";
 
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
-import { STORAGE_BUCKET } from "@/lib/constants";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { authedFetch } from "@/lib/client-fetch";
 import { buildFolderIndex, type FolderIndex } from "@/lib/folders";
 import { forgetSignedUrl } from "@/lib/signed-urls";
 import { supabase } from "@/lib/supabase/browser";
@@ -28,27 +19,29 @@ type PubPatch = Partial<
 >;
 
 export interface Store extends Data {
+  /** true dès que les données ont été chargées au moins une fois */
   ready: boolean;
+  /** erreur du dernier chargement (null si OK) */
   error: string | null;
+  online: boolean;
   index: FolderIndex;
   contentById: Map<string, ContentFull>;
   accountById: Map<string, Account>;
   reload: () => Promise<void>;
   createFolder: (input: { name: string; parent_id: string | null; color?: string; description?: string }) => Promise<Folder | null>;
-  updateFolder: (id: string, patch: Partial<Pick<Folder, "name" | "color" | "description" | "parent_id" | "position">>) => Promise<void>;
+  updateFolder: (id: string, patch: Partial<Pick<Folder, "name" | "color" | "description" | "parent_id" | "position">>) => Promise<boolean>;
   deleteFolder: (id: string) => Promise<boolean>;
   createAccount: (input: Pick<Account, "folder_id" | "platform" | "handle" | "url">) => Promise<Account | null>;
-  updateAccount: (id: string, patch: Partial<Pick<Account, "platform" | "handle" | "url" | "folder_id">>) => Promise<void>;
-  deleteAccount: (id: string) => Promise<void>;
+  updateAccount: (id: string, patch: Partial<Pick<Account, "platform" | "handle" | "url" | "folder_id">>) => Promise<boolean>;
+  deleteAccount: (id: string) => Promise<boolean>;
   createContent: (input: Pick<Content, "folder_id" | "title" | "format">) => Promise<ContentFull | null>;
-  updateContent: (id: string, patch: Partial<Pick<Content, "title" | "format" | "notes" | "folder_id">>) => Promise<void>;
-  deleteContent: (id: string) => Promise<void>;
-  savePublication: (contentId: string, accountId: string, patch: PubPatch) => Promise<void>;
-  deletePublication: (contentId: string, accountId: string) => Promise<void>;
+  updateContent: (id: string, patch: Partial<Pick<Content, "title" | "format" | "notes" | "folder_id">>) => Promise<boolean>;
+  deleteContent: (id: string) => Promise<boolean>;
+  savePublication: (contentId: string, accountId: string, patch: PubPatch) => Promise<boolean>;
+  deletePublication: (contentId: string, accountId: string) => Promise<boolean>;
   addAsset: (asset: Asset) => void;
-  updateAsset: (id: string, patch: Partial<Pick<Asset, "kind" | "position">>) => Promise<void>;
-  deleteAsset: (asset: Asset) => Promise<void>;
-  reorderAssets: (contentId: string, orderedIds: string[]) => Promise<void>;
+  deleteAsset: (asset: Asset) => Promise<boolean>;
+  reorderAssets: (contentId: string, orderedIds: string[]) => Promise<boolean>;
 }
 
 const Ctx = createContext<Store | null>(null);
@@ -59,6 +52,57 @@ export function useData(): Store {
   return s;
 }
 
+/* ------------------------------------------------------------------ */
+/* Coordination des écritures (un seul DataProvider dans l'app)        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Écritures en cours et horodatage de la dernière : un rechargement lancé avant une écriture
+ * ne doit pas écraser l'état local.
+ */
+const RELOAD_EVENT = "depot:reload";
+const writes = { pending: 0, last: 0, loading: false, retry: null as ReturnType<typeof setTimeout> | null };
+
+/** Enveloppe une écriture pour la signaler au rechargement automatique. */
+function tracked<A extends unknown[], R>(fn: (...args: A) => R) {
+  return (...args: A): R => {
+    writes.pending++;
+    writes.last = Date.now();
+    const done = () => {
+      writes.pending--;
+      writes.last = Date.now();
+    };
+    try {
+      const out = fn(...args);
+      if (out instanceof Promise) out.then(done, done);
+      else done();
+      return out;
+    } catch (e) {
+      done();
+      throw e;
+    }
+  };
+}
+
+/** File d'attente par clé : deux écritures sur la même ligne partent dans l'ordre. */
+const queues = new Map<string, Promise<unknown>>();
+function serialize<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = queues.get(key) ?? Promise.resolve();
+  const next = prev.catch(() => {}).then(fn);
+  queues.set(key, next);
+  next.finally(() => queues.get(key) === next && queues.delete(key)).catch(() => {});
+  return next;
+}
+
+function friendlyError(e: unknown): string {
+  const err = e as { code?: string; message?: string } | null;
+  if (err?.code === "23505") return "Ce nom existe déjà à cet endroit";
+  if (err?.code === "23503") return "Élément lié introuvable (supprimé entre-temps ?)";
+  if (typeof navigator !== "undefined" && !navigator.onLine) return "Pas de connexion internet";
+  if (/Failed to fetch|NetworkError|Load failed/i.test(err?.message ?? "")) return "Connexion impossible";
+  return err?.message ?? "";
+}
+
 async function fetchAllContents(): Promise<ContentFull[]> {
   const out: ContentFull[] = [];
   const page = 1000;
@@ -67,6 +111,7 @@ async function fetchAllContents(): Promise<ContentFull[]> {
       .from("contents")
       .select("*, publications(*), assets(*)")
       .order("created_at", { ascending: false })
+      .order("id")
       .range(from, from + page - 1);
     if (error) throw error;
     out.push(...((data ?? []) as ContentFull[]));
@@ -80,49 +125,69 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const [data, setData] = useState<Data>({ folders: [], accounts: [], contents: [] });
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const loading = useRef(false);
+  const [online, setOnline] = useState(true);
 
   const fail = useCallback(
-    (e: unknown, msg = "Oups, l'enregistrement a échoué") => {
+    (e: unknown, msg = "Pas enregistré") => {
       console.error(e);
-      const detail = e && typeof e === "object" && "message" in e ? String((e as Error).message) : "";
+      const detail = friendlyError(e);
       toast(detail ? `${msg} : ${detail}` : msg, "error");
     },
     [toast],
   );
 
   const reload = useCallback(async () => {
-    if (loading.current) return;
-    loading.current = true;
+    if (writes.loading) return;
+    writes.loading = true;
+    const startedAt = Date.now();
     try {
       const sb = supabase();
       const [f, a, contents] = await Promise.all([
-        sb.from("folders").select("*"),
-        sb.from("accounts").select("*"),
+        sb.from("folders").select("*").order("id"),
+        sb.from("accounts").select("*").order("id"),
         fetchAllContents(),
       ]);
       if (f.error) throw f.error;
       if (a.error) throw a.error;
+      if (writes.pending > 0 || writes.last >= startedAt) {
+        // une modification a eu lieu pendant le chargement : instantané peut-être périmé, on recommence
+        if (writes.retry) clearTimeout(writes.retry);
+        writes.retry = setTimeout(() => window.dispatchEvent(new Event(RELOAD_EVENT)), 1500);
+        return;
+      }
       setData({ folders: f.data as Folder[], accounts: a.data as Account[], contents });
       setError(null);
+      setReady(true);
     } catch (e) {
       console.error(e);
-      setError(e instanceof Error ? e.message : "Chargement impossible");
+      setError(friendlyError(e) || "Chargement impossible");
     } finally {
-      loading.current = false;
-      setReady(true);
+      writes.loading = false;
     }
   }, []);
 
   useEffect(() => {
-    // chargement initial + rafraîchissement quand l'app revient au premier plan
+    // chargement initial + rafraîchissement au retour au premier plan, au retour du réseau et chaque minute
     // eslint-disable-next-line react-hooks/set-state-in-effect
     reload();
     const onVisible = () => document.visibilityState === "visible" && reload();
+    const onRetry = () => reload();
+    const onOnline = () => {
+      setOnline(true);
+      reload();
+    };
+    const onOffline = () => setOnline(false);
+    setOnline(navigator.onLine);
     document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener(RELOAD_EVENT, onRetry);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
     const timer = setInterval(() => document.visibilityState === "visible" && reload(), 60_000);
     return () => {
       document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener(RELOAD_EVENT, onRetry);
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
       clearInterval(timer);
     };
   }, [reload]);
@@ -140,13 +205,14 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const createFolder: Store["createFolder"] = useCallback(
     async (input) => {
       const siblings = data.folders.filter((f) => f.parent_id === input.parent_id);
+      const name = input.name.replace(/[/>]+/g, "-").trim();
       const { data: row, error } = await supabase()
         .from("folders")
-        .insert({ ...input, position: siblings.length })
+        .insert({ ...input, name, position: siblings.length })
         .select()
         .single();
       if (error) {
-        fail(error, "Impossible de créer le dossier");
+        fail(error, "Dossier non créé");
         return null;
       }
       setData((d) => ({ ...d, folders: [...d.folders, row as Folder] }));
@@ -156,15 +222,19 @@ export function DataProvider({ children }: { children: ReactNode }) {
   );
 
   const updateFolder: Store["updateFolder"] = useCallback(
-    async (id, patch) => {
+    async (id, rawPatch) => {
+      const patch = rawPatch.name ? { ...rawPatch, name: rawPatch.name.replace(/[/>]+/g, "-").trim() } : rawPatch;
+      const before = data.folders.find((f) => f.id === id);
       setData((d) => ({ ...d, folders: d.folders.map((f) => (f.id === id ? { ...f, ...patch } : f)) }));
       const { error } = await supabase().from("folders").update(patch).eq("id", id);
       if (error) {
-        fail(error);
-        reload();
+        fail(error, "Dossier non modifié");
+        if (before) setData((d) => ({ ...d, folders: d.folders.map((f) => (f.id === id ? before : f)) }));
+        return false;
       }
+      return true;
     },
-    [fail, reload],
+    [data.folders, fail],
   );
 
   const deleteFolder: Store["deleteFolder"] = useCallback(
@@ -178,14 +248,18 @@ export function DataProvider({ children }: { children: ReactNode }) {
         fail(error, "Suppression impossible");
         return false;
       }
+      const goneAccounts = new Set(data.accounts.filter((a) => a.folder_id === id).map((a) => a.id));
       setData((d) => ({
         ...d,
         folders: d.folders.filter((f) => f.id !== id),
         accounts: d.accounts.filter((a) => a.folder_id !== id),
+        contents: goneAccounts.size
+          ? d.contents.map((c) => ({ ...c, publications: c.publications.filter((p) => !goneAccounts.has(p.account_id)) }))
+          : d.contents,
       }));
       return true;
     },
-    [data.folders, data.contents, fail, toast],
+    [data.folders, data.contents, data.accounts, fail, toast],
   );
 
   /* ---------------- comptes ---------------- */
@@ -197,7 +271,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
         .select()
         .single();
       if (error) {
-        fail(error, "Impossible d'ajouter le compte");
+        fail(error.code === "23505" ? { message: "Ce compte existe déjà dans ce dossier" } : error, "Compte non ajouté");
         return null;
       }
       setData((d) => ({ ...d, accounts: [...d.accounts, row as Account] }));
@@ -208,20 +282,26 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
   const updateAccount: Store["updateAccount"] = useCallback(
     async (id, patch) => {
+      const before = data.accounts.find((a) => a.id === id);
       setData((d) => ({ ...d, accounts: d.accounts.map((a) => (a.id === id ? { ...a, ...patch } : a)) }));
       const { error } = await supabase().from("accounts").update(patch).eq("id", id);
       if (error) {
-        fail(error);
-        reload();
+        fail(error.code === "23505" ? { message: "Ce compte existe déjà dans ce dossier" } : error, "Compte non modifié");
+        if (before) setData((d) => ({ ...d, accounts: d.accounts.map((a) => (a.id === id ? before : a)) }));
+        return false;
       }
+      return true;
     },
-    [fail, reload],
+    [data.accounts, fail],
   );
 
   const deleteAccount: Store["deleteAccount"] = useCallback(
     async (id) => {
       const { error } = await supabase().from("accounts").delete().eq("id", id);
-      if (error) return fail(error, "Suppression impossible");
+      if (error) {
+        fail(error, "Suppression impossible");
+        return false;
+      }
       setData((d) => ({
         ...d,
         accounts: d.accounts.filter((a) => a.id !== id),
@@ -230,6 +310,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
           publications: c.publications.filter((p) => p.account_id !== id),
         })),
       }));
+      return true;
     },
     [fail],
   );
@@ -239,7 +320,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     async (input) => {
       const { data: row, error } = await supabase().from("contents").insert(input).select().single();
       if (error) {
-        fail(error, "Impossible de créer le contenu");
+        fail(error, "Contenu non créé");
         return null;
       }
       const full: ContentFull = { ...(row as Content), publications: [], assets: [] };
@@ -250,36 +331,53 @@ export function DataProvider({ children }: { children: ReactNode }) {
   );
 
   const updateContent: Store["updateContent"] = useCallback(
-    async (id, patch) => {
-      patchContentLocal(id, (c) => ({ ...c, ...patch }));
-      const { error } = await supabase().from("contents").update(patch).eq("id", id);
-      if (error) {
-        fail(error);
-        reload();
-      }
-    },
-    [fail, patchContentLocal, reload],
+    (id, patch) =>
+      serialize(`content:${id}`, async () => {
+        const before = data.contents.find((c) => c.id === id);
+        patchContentLocal(id, (c) => ({ ...c, ...patch }));
+        const { error } = await supabase().from("contents").update(patch).eq("id", id);
+        if (error) {
+          fail(error);
+          if (before) {
+            const keys = Object.keys(patch) as (keyof typeof patch)[];
+            patchContentLocal(id, (c) => ({ ...c, ...Object.fromEntries(keys.map((k) => [k, before[k]])) }));
+          }
+          return false;
+        }
+        return true;
+      }),
+    [data.contents, fail, patchContentLocal],
   );
 
   const deleteContent: Store["deleteContent"] = useCallback(
     async (id) => {
-      const content = data.contents.find((c) => c.id === id);
-      const paths = content?.assets.map((a) => a.storage_path) ?? [];
-      if (paths.length) {
-        const { error } = await supabase().storage.from(STORAGE_BUCKET).remove(paths);
-        if (error) return fail(error, "Impossible de supprimer les fichiers");
+      try {
+        const res = await authedFetch<{ warning?: string }>("/api/storage/delete", {
+          method: "POST",
+          body: JSON.stringify({ content_id: id }),
+        });
+        if (res.warning) console.warn(res.warning);
+      } catch (e) {
+        fail(e, "Suppression impossible");
+        return false;
       }
-      const { error } = await supabase().from("contents").delete().eq("id", id);
-      if (error) return fail(error, "Suppression impossible");
+      const content = data.contents.find((c) => c.id === id);
+      content?.assets.forEach((a) => forgetSignedUrl(a.storage_path));
       setData((d) => ({ ...d, contents: d.contents.filter((c) => c.id !== id) }));
+      return true;
     },
     [data.contents, fail],
   );
 
   /* ---------------- publications ---------------- */
   const savePublication: Store["savePublication"] = useCallback(
-    async (contentId, accountId, patch) => {
+    (contentId, accountId, patch) => {
       const now = new Date().toISOString();
+      // état d'avant, pour revenir en arrière si l'enregistrement échoue
+      const before = data.contents
+        .find((c) => c.id === contentId)
+        ?.publications.find((p) => p.account_id === accountId);
+
       patchContentLocal(contentId, (c) => {
         const existing = c.publications.find((p) => p.account_id === accountId);
         if (existing) {
@@ -290,8 +388,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
                 ? {
                     ...p,
                     ...patch,
-                    posted_at:
-                      patch.posted === undefined ? p.posted_at : patch.posted ? p.posted_at ?? now : null,
+                    posted_at: patch.posted === undefined ? p.posted_at : patch.posted ? p.posted_at ?? now : null,
                   }
                 : p,
             ),
@@ -316,123 +413,141 @@ export function DataProvider({ children }: { children: ReactNode }) {
         return { ...c, publications: [...c.publications, draft] };
       });
 
-      const { data: row, error } = await supabase()
-        .from("publications")
-        .upsert({ content_id: contentId, account_id: accountId, ...patch }, { onConflict: "content_id,account_id" })
-        .select("id, created_at, updated_at, posted_at")
-        .single();
-      if (error) {
-        fail(error);
-        reload();
-        return;
-      }
-      patchContentLocal(contentId, (c) => ({
-        ...c,
-        publications: c.publications.map((p) => (p.account_id === accountId ? { ...p, ...row } : p)),
-      }));
+      return serialize(`pub:${contentId}:${accountId}`, async () => {
+        const { data: row, error } = await supabase()
+          .from("publications")
+          .upsert({ content_id: contentId, account_id: accountId, ...patch }, { onConflict: "content_id,account_id" })
+          .select("id, created_at, updated_at, posted_at")
+          .single();
+        if (error) {
+          fail(error);
+          patchContentLocal(contentId, (c) => {
+            if (!before) return { ...c, publications: c.publications.filter((p) => p.account_id !== accountId) };
+            const keys = [...Object.keys(patch), "posted_at"] as (keyof Publication)[];
+            const restore = Object.fromEntries(keys.map((k) => [k, before[k]]));
+            return {
+              ...c,
+              publications: c.publications.map((p) => (p.account_id === accountId ? { ...p, ...restore } : p)),
+            };
+          });
+          return false;
+        }
+        patchContentLocal(contentId, (c) => ({
+          ...c,
+          publications: c.publications.map((p) => (p.account_id === accountId ? { ...p, ...row } : p)),
+        }));
+        return true;
+      });
     },
-    [fail, patchContentLocal, reload],
+    [data.contents, fail, patchContentLocal],
   );
 
   const deletePublication: Store["deletePublication"] = useCallback(
-    async (contentId, accountId) => {
-      patchContentLocal(contentId, (c) => ({
-        ...c,
-        publications: c.publications.filter((p) => p.account_id !== accountId),
-      }));
-      const { error } = await supabase()
-        .from("publications")
-        .delete()
-        .eq("content_id", contentId)
-        .eq("account_id", accountId);
-      if (error) {
-        fail(error);
-        reload();
-      }
-    },
-    [fail, patchContentLocal, reload],
+    (contentId, accountId) =>
+      serialize(`pub:${contentId}:${accountId}`, async () => {
+        const before = data.contents
+          .find((c) => c.id === contentId)
+          ?.publications.find((p) => p.account_id === accountId);
+        patchContentLocal(contentId, (c) => ({
+          ...c,
+          publications: c.publications.filter((p) => p.account_id !== accountId),
+        }));
+        const { error } = await supabase()
+          .from("publications")
+          .delete()
+          .eq("content_id", contentId)
+          .eq("account_id", accountId);
+        if (error) {
+          fail(error, "Non retiré");
+          if (before) patchContentLocal(contentId, (c) => ({ ...c, publications: [...c.publications, before] }));
+          return false;
+        }
+        return true;
+      }),
+    [data.contents, fail, patchContentLocal],
   );
 
   /* ---------------- fichiers ---------------- */
   const addAsset: Store["addAsset"] = useCallback(
-    (asset) => patchContentLocal(asset.content_id, (c) => ({ ...c, assets: [...c.assets, asset] })),
+    (asset) =>
+      patchContentLocal(asset.content_id, (c) =>
+        c.assets.some((a) => a.id === asset.id) ? c : { ...c, assets: [...c.assets, asset] },
+      ),
     [patchContentLocal],
-  );
-
-  const updateAsset: Store["updateAsset"] = useCallback(
-    async (id, patch) => {
-      setData((d) => ({
-        ...d,
-        contents: d.contents.map((c) =>
-          c.assets.some((a) => a.id === id)
-            ? { ...c, assets: c.assets.map((a) => (a.id === id ? { ...a, ...patch } : a)) }
-            : c,
-        ),
-      }));
-      const { error } = await supabase().from("assets").update(patch).eq("id", id);
-      if (error) {
-        fail(error);
-        reload();
-      }
-    },
-    [fail, reload],
   );
 
   const deleteAsset: Store["deleteAsset"] = useCallback(
     async (asset) => {
-      const { error: sErr } = await supabase().storage.from(STORAGE_BUCKET).remove([asset.storage_path]);
-      if (sErr) return fail(sErr, "Impossible de supprimer le fichier");
-      const { error } = await supabase().from("assets").delete().eq("id", asset.id);
-      if (error) return fail(error, "Impossible de supprimer le fichier");
+      try {
+        const res = await authedFetch<{ warning?: string }>("/api/storage/delete", {
+          method: "POST",
+          body: JSON.stringify({ asset_id: asset.id }),
+        });
+        if (res.warning) console.warn(res.warning);
+      } catch (e) {
+        fail(e, "Fichier non supprimé");
+        return false;
+      }
       forgetSignedUrl(asset.storage_path);
       patchContentLocal(asset.content_id, (c) => ({ ...c, assets: c.assets.filter((a) => a.id !== asset.id) }));
+      return true;
     },
     [fail, patchContentLocal],
   );
 
   const reorderAssets: Store["reorderAssets"] = useCallback(
-    async (contentId, orderedIds) => {
-      const pos = new Map(orderedIds.map((id, i) => [id, i]));
-      patchContentLocal(contentId, (c) => ({
-        ...c,
-        assets: c.assets.map((a) => (pos.has(a.id) ? { ...a, position: pos.get(a.id)! } : a)),
-      }));
-      const results = await Promise.all(
-        orderedIds.map((id, i) => supabase().from("assets").update({ position: i }).eq("id", id)),
-      );
-      const err = results.find((r) => r.error)?.error;
-      if (err) {
-        fail(err);
-        reload();
-      }
-    },
-    [fail, patchContentLocal, reload],
+    (contentId, orderedIds) =>
+      serialize(`order:${contentId}`, async () => {
+        const content = data.contents.find((c) => c.id === contentId);
+        const current = new Map(content?.assets.map((a) => [a.id, a.position]) ?? []);
+        const changed = orderedIds.map((id, i) => ({ id, position: i })).filter((x) => current.get(x.id) !== x.position);
+        if (!changed.length) return true;
+        const pos = new Map(changed.map((x) => [x.id, x.position]));
+        patchContentLocal(contentId, (c) => ({
+          ...c,
+          assets: c.assets.map((a) => (pos.has(a.id) ? { ...a, position: pos.get(a.id)! } : a)),
+        }));
+        const results = await Promise.all(
+          changed.map((x) => supabase().from("assets").update({ position: x.position }).eq("id", x.id)),
+        );
+        const err = results.find((r) => r.error)?.error;
+        if (err) {
+          fail(err, "Ordre non enregistré");
+          patchContentLocal(contentId, (c) => ({
+            ...c,
+            assets: c.assets.map((a) => (current.has(a.id) ? { ...a, position: current.get(a.id)! } : a)),
+          }));
+          return false;
+        }
+        return true;
+      }),
+    [data.contents, fail, patchContentLocal],
   );
 
-  const store: Store = {
-    ...data,
-    ready,
-    error,
-    index,
-    contentById,
-    accountById,
-    reload,
-    createFolder,
-    updateFolder,
-    deleteFolder,
-    createAccount,
-    updateAccount,
-    deleteAccount,
-    createContent,
-    updateContent,
-    deleteContent,
-    savePublication,
-    deletePublication,
-    addAsset,
-    updateAsset,
-    deleteAsset,
-    reorderAssets,
-  };
+  const actions = useMemo(
+    () => ({
+      createFolder: tracked(createFolder),
+      updateFolder: tracked(updateFolder),
+      deleteFolder: tracked(deleteFolder),
+      createAccount: tracked(createAccount),
+      updateAccount: tracked(updateAccount),
+      deleteAccount: tracked(deleteAccount),
+      createContent: tracked(createContent),
+      updateContent: tracked(updateContent),
+      deleteContent: tracked(deleteContent),
+      savePublication: tracked(savePublication),
+      deletePublication: tracked(deletePublication),
+      addAsset: tracked(addAsset),
+      deleteAsset: tracked(deleteAsset),
+      reorderAssets: tracked(reorderAssets),
+    }),
+    [
+      createFolder, updateFolder, deleteFolder, createAccount, updateAccount, deleteAccount, createContent,
+      updateContent, deleteContent, savePublication, deletePublication, addAsset, deleteAsset, reorderAssets,
+    ],
+  );
+
+  const store: Store = { ...data, ready, error, online, index, contentById, accountById, reload, ...actions };
 
   return <Ctx value={store}>{children}</Ctx>;
 }

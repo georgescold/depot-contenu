@@ -89,6 +89,7 @@ export interface ApiKey {
 export interface TeamMember {
   user_id: string;
   email: string;
+  role: "owner" | "member";
   created_at: string;
 }
 

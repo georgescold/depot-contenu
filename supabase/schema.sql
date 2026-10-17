@@ -180,24 +180,119 @@ drop policy if exists team_read on public.team_members;
 create policy team_read on public.team_members for select to authenticated
   using (public.is_team_member());
 
--- ---------- Stockage des fichiers (bucket privé) ----------------------
-insert into storage.buckets (id, name, public)
-values ('media', 'media', false)
-on conflict (id) do nothing;
+-- ---------- Fichiers -------------------------------------------------
+-- Les fichiers sont stockés chez Backblaze B2 (voir src/lib/b2.ts), pas dans Supabase Storage.
+-- assets.storage_path = clé de l'objet dans le bucket B2.
 
-drop policy if exists media_team_select on storage.objects;
-create policy media_team_select on storage.objects for select to authenticated
-  using (bucket_id = 'media' and public.is_team_member());
+-- =====================================================================
+-- Durcissement (revue de sécurité du 2026-10-17)
+-- =====================================================================
 
-drop policy if exists media_team_insert on storage.objects;
-create policy media_team_insert on storage.objects for insert to authenticated
-  with check (bucket_id = 'media' and public.is_team_member());
+-- ---------- Rôles : le premier compte est « owner » -------------------
+alter table public.team_members add column if not exists role text not null default 'member';
+do $$ begin
+  alter table public.team_members add constraint team_members_role_check check (role in ('owner','member'));
+exception when duplicate_object then null; end $$;
 
-drop policy if exists media_team_update on storage.objects;
-create policy media_team_update on storage.objects for update to authenticated
-  using (bucket_id = 'media' and public.is_team_member())
-  with check (bucket_id = 'media' and public.is_team_member());
+-- ---------- Drapeau « installation faite » (ne repasse jamais à faux) -
+create table if not exists public.app_settings (
+  key        text primary key,
+  value      jsonb not null default 'true'::jsonb,
+  created_at timestamptz not null default now()
+);
+alter table public.app_settings enable row level security;
+revoke all on public.app_settings from anon, authenticated;
+grant all on public.app_settings to service_role;
 
-drop policy if exists media_team_delete on storage.objects;
-create policy media_team_delete on storage.objects for delete to authenticated
-  using (bucket_id = 'media' and public.is_team_member());
+-- Création du premier compte, atomique (verrou) et une seule fois dans la vie du projet.
+create or replace function public.claim_first_member(p_user_id uuid, p_email text)
+returns void language plpgsql security definer set search_path = '' as $$
+begin
+  lock table public.team_members in exclusive mode;
+  if exists (select 1 from public.app_settings where key = 'setup_done')
+     or exists (select 1 from public.team_members) then
+    raise exception 'setup_already_done' using errcode = 'P0001';
+  end if;
+  insert into public.team_members (user_id, email, role) values (p_user_id, p_email, 'owner');
+  insert into public.app_settings (key) values ('setup_done') on conflict (key) do nothing;
+end;
+$$;
+
+-- Retrait d'un membre : jamais le dernier, et ses clés API sont révoquées.
+create or replace function public.remove_team_member(p_user_id uuid)
+returns void language plpgsql security definer set search_path = '' as $$
+begin
+  lock table public.team_members in exclusive mode;
+  if not exists (select 1 from public.team_members where user_id = p_user_id) then
+    raise exception 'member_not_found' using errcode = 'P0002';
+  end if;
+  if (select count(*) from public.team_members where user_id <> p_user_id) = 0 then
+    raise exception 'last_member' using errcode = 'P0001';
+  end if;
+  update public.api_keys set revoked_at = now() where created_by = p_user_id and revoked_at is null;
+  delete from public.team_members where user_id = p_user_id;
+end;
+$$;
+
+revoke all on function public.claim_first_member(uuid, text) from public, anon, authenticated;
+revoke all on function public.remove_team_member(uuid) from public, anon, authenticated;
+grant execute on function public.claim_first_member(uuid, text) to service_role;
+grant execute on function public.remove_team_member(uuid) to service_role;
+
+-- Les membres existants avant l'ajout des rôles : le plus ancien devient owner.
+update public.team_members set role = 'owner'
+where user_id = (select user_id from public.team_members order by created_at limit 1)
+  and not exists (select 1 from public.team_members where role = 'owner');
+insert into public.app_settings (key)
+select 'setup_done' where exists (select 1 from public.team_members)
+on conflict (key) do nothing;
+
+-- ---------- Pas de doublons de dossiers frères ni de comptes ----------
+create unique index if not exists folders_unique_sibling_name
+  on public.folders (coalesce(parent_id, '00000000-0000-0000-0000-000000000000'::uuid), lower(btrim(name)));
+create unique index if not exists accounts_unique_handle
+  on public.accounts (folder_id, platform, lower(btrim(handle)));
+
+-- ---------- Pas de cycle dans l'arborescence --------------------------
+create or replace function public.folders_prevent_cycle()
+returns trigger language plpgsql set search_path = '' as $$
+declare cur uuid := new.parent_id; depth int := 0;
+begin
+  while cur is not null loop
+    if cur = new.id then
+      raise exception 'Un dossier ne peut pas être rangé dans lui-même ou dans un de ses sous-dossiers.';
+    end if;
+    select parent_id into cur from public.folders where id = cur;
+    depth := depth + 1;
+    if depth > 100 then raise exception 'Arborescence trop profonde.'; end if;
+  end loop;
+  return new;
+end;
+$$;
+drop trigger if exists folders_no_cycle on public.folders;
+create trigger folders_no_cycle before insert or update of parent_id on public.folders
+  for each row execute function public.folders_prevent_cycle();
+
+-- ---------- Clés API : une clé révoquée le reste, hash et auteur figés -
+create or replace function public.api_keys_guard()
+returns trigger language plpgsql set search_path = '' as $$
+begin
+  if tg_op = 'INSERT' then
+    if auth.uid() is not null then new.created_by := auth.uid(); end if;
+    new.revoked_at := null;
+    new.last_used_at := null;
+    return new;
+  end if;
+  if old.revoked_at is not null and new.revoked_at is null then
+    raise exception 'Une clé révoquée ne peut pas être réactivée.';
+  end if;
+  new.key_hash := old.key_hash;
+  new.prefix := old.prefix;
+  new.created_by := old.created_by;
+  new.created_at := old.created_at;
+  return new;
+end;
+$$;
+drop trigger if exists api_keys_guard on public.api_keys;
+create trigger api_keys_guard before insert or update on public.api_keys
+  for each row execute function public.api_keys_guard();

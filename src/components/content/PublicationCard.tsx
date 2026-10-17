@@ -2,7 +2,7 @@
 
 import { addDays, format } from "date-fns";
 import { Copy, ExternalLink, Plus, X } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { PLATFORMS } from "@/lib/constants";
 import { copyText } from "@/lib/clipboard";
 import { dateTimeLabel } from "@/lib/format";
@@ -29,6 +29,15 @@ export function PublicationCard({
   const info = PLATFORMS[account.platform];
   const save = (patch: Parameters<typeof savePublication>[2]) => savePublication(content.id, account.id, patch);
   const [copiedFrom, setCopiedFrom] = useState("");
+  // texte en cours de frappe (peut être plus récent que la valeur enregistrée)
+  const draft = useRef<{ title?: string; description?: string }>({});
+
+  /** Date tapée au clavier : on n'enregistre pas les états intermédiaires (année 0002, 0020…). */
+  const onDate = (v: string) => {
+    if (!v) return save({ scheduled_date: null });
+    const year = Number(v.slice(0, 4));
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v) && year >= 2000 && year <= 2100) save({ scheduled_date: v });
+  };
 
   const copy = async (text: string, what: string) => {
     if (!text.trim()) return toast(`${what} vide`, "error");
@@ -94,7 +103,7 @@ export function PublicationCard({
             <Input
               type="date"
               value={pub.scheduled_date ?? ""}
-              onChange={(e) => save({ scheduled_date: e.target.value || null })}
+              onChange={(e) => onDate(e.target.value)}
               className="h-9 min-w-0 flex-1"
               aria-label="Date de publication"
             />
@@ -124,12 +133,17 @@ export function PublicationCard({
                 <span className={cn("text-xs tabular-nums", pub.title.length > 100 ? "text-danger" : "text-muted")}>
                   {pub.title.length}/100
                 </span>
-                <IconButton label="Copier le titre" className="size-7" onClick={() => copy(pub.title, "Titre")}>
+                <IconButton label="Copier le titre" className="size-7" onClick={() => copy(draft.current.title ?? pub.title, "Titre")}>
                   <Copy className="size-3.5" />
                 </IconButton>
               </div>
             </div>
-            <AutoField value={pub.title} onCommit={(v) => save({ title: v })} placeholder="Titre de la vidéo" />
+            <AutoField
+              value={pub.title}
+              onCommit={(v) => save({ title: v })}
+              onLocalChange={(v) => (draft.current.title = v)}
+              placeholder="Titre de la vidéo"
+            />
           </div>
         )}
 
@@ -147,6 +161,7 @@ export function PublicationCard({
             minRows={4}
             value={pub.description}
             onCommit={(v) => save({ description: v })}
+            onLocalChange={(v) => (draft.current.description = v)}
             placeholder={`Texte à publier sur ${info.label}… (hashtags compris)`}
           />
           <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -154,7 +169,9 @@ export function PublicationCard({
               variant="primary"
               size="sm"
               icon={<Copy className="size-4" />}
-              onClick={() => copy(pub.description, account.platform === "youtube" ? "Description" : "Légende")}
+              onClick={() =>
+                copy(draft.current.description ?? pub.description, account.platform === "youtube" ? "Description" : "Légende")
+              }
             >
               Copier le texte
             </Button>
@@ -193,7 +210,7 @@ export function PublicationCard({
               placeholder="Lien du post (facultatif)"
               className="h-9"
             />
-            {pub.post_url && (
+            {/^https?:\/\//i.test(pub.post_url) && (
               <a
                 href={pub.post_url}
                 target="_blank"

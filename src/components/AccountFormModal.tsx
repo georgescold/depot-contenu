@@ -20,20 +20,22 @@ function AccountForm({ open, onClose, folderId, account }: Props) {
   const [busy, setBusy] = useState(false);
 
   const submit = async () => {
+    if (busy) return;
     setBusy(true);
     const h = handle.trim();
     const normalized = h && !h.startsWith("@") && platform !== "youtube" && platform !== "other" ? `@${h}` : h;
-    if (account) await updateAccount(account.id, { platform, handle: normalized, url: url.trim() });
-    else await createAccount({ folder_id: folderId, platform, handle: normalized, url: url.trim() });
+    const cleanUrl = /^https?:\/\//i.test(url.trim()) || !url.trim() ? url.trim() : `https://${url.trim()}`;
+    const ok = account
+      ? await updateAccount(account.id, { platform, handle: normalized, url: cleanUrl })
+      : !!(await createAccount({ folder_id: folderId, platform, handle: normalized, url: cleanUrl }));
     setBusy(false);
-    onClose();
+    if (ok) onClose();
   };
 
   const remove = async () => {
     if (!account) return;
     if (!confirm("Supprimer ce compte ? Les publications prévues sur ce compte seront supprimées (les contenus restent).")) return;
-    await deleteAccount(account.id);
-    onClose();
+    if (await deleteAccount(account.id)) onClose();
   };
 
   return (
@@ -58,7 +60,7 @@ function AccountForm({ open, onClose, folderId, account }: Props) {
       }
     >
       <div className="space-y-4">
-        <Field label="Plateforme">
+        <Field label="Plateforme" group>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
             {PLATFORM_LIST.map((p) => (
               <button

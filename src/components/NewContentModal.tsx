@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FOLDER_COLORS, FORMAT_LIST, FORMATS } from "@/lib/constants";
 import { useLocalState } from "@/lib/use-local-state";
 import type { Format } from "@/lib/types";
@@ -30,22 +30,33 @@ function NewContentForm({ open, onClose, defaultFolderId }: Props) {
   const [projectName, setProjectName] = useState("");
   const [busy, setBusy] = useState(false);
 
+  const busyRef = useRef(false);
+  const alive = useRef(true);
+  useEffect(() => () => void (alive.current = false), []);
+
   const submit = async () => {
+    if (busyRef.current) return; // double appui / double Entrée
+    busyRef.current = true;
     setBusy(true);
+    const done = () => {
+      busyRef.current = false;
+      if (alive.current) setBusy(false);
+    };
     let target = folderId;
     if (!folders.length) {
       const name = projectName.trim();
-      if (!name) return setBusy(false);
+      if (!name) return done();
       const f = await createFolder({ name, parent_id: null, color: FOLDER_COLORS[0] });
-      if (!f) return setBusy(false);
+      if (!f) return done();
       target = f.id;
     }
-    if (!target) return setBusy(false);
+    if (!target) return done();
     const c = await createContent({ folder_id: target, title: title.trim() || "Sans titre", format });
-    setBusy(false);
+    done();
     if (!c) return;
     setLastFolder(target);
     setLastFormat(format);
+    if (!alive.current) return; // fenêtre fermée entre-temps : le contenu existe, on ne navigue pas
     onClose();
     router.push(`/contenus/${c.id}`);
   };
@@ -92,7 +103,7 @@ function NewContentForm({ open, onClose, defaultFolderId }: Props) {
             <Input value={projectName} onChange={(e) => setProjectName(e.target.value)} placeholder="Ex. Compaatible" />
           </Field>
         )}
-        <Field label="Format">
+        <Field label="Format" group>
           <div className="flex flex-wrap gap-2">
             {FORMAT_LIST.map((f) => (
               <Chip key={f} active={format === f} onClick={() => setFormat(f)}>

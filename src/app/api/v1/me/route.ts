@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { MAX_FILE_MB } from "@/lib/constants";
+import { MAX_FILE_MB, MULTIPART_THRESHOLD } from "@/lib/constants";
 import { handle, json } from "@/lib/api/http";
 import { appOrigin } from "@/lib/api/serialize";
 import { todayParis } from "@/lib/api/validate";
@@ -18,6 +18,8 @@ export async function GET(req: NextRequest) {
       app: {
         url: appOrigin(req),
         max_file_mb: MAX_FILE_MB,
+        multipart_threshold_bytes: MULTIPART_THRESHOLD,
+        max_files_per_request: 100,
         today: todayParis(),
       },
     }),

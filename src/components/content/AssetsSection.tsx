@@ -1,20 +1,16 @@
 "use client";
 
-import { ArrowLeft, ArrowRight, Download, ExternalLink, FileText, Plus, Trash2, Upload } from "lucide-react";
-import { useRef, useState, type DragEvent, type ReactNode } from "react";
+import { ArrowLeft, ArrowRight, ExternalLink, FileText, Plus, Trash2, Upload } from "lucide-react";
+import { useLayoutEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { ASSET_KINDS } from "@/lib/constants";
 import { formatBytes } from "@/lib/format";
-import { getDownloadUrl, useSignedUrl } from "@/lib/signed-urls";
+import { forgetSignedUrl, useSignedUrl } from "@/lib/signed-urls";
 import type { Asset, AssetKind, ContentFull } from "@/lib/types";
 import { useData } from "../data/DataProvider";
-import { useToast } from "../Toast";
 import { Button, cn, IconButton } from "../ui";
 import { useUploads } from "../upload/UploadProvider";
+import { SaveToDevice } from "./SaveToDevice";
 
-export async function downloadAsset(a: Asset) {
-  const url = await getDownloadUrl(a.storage_path, a.file_name);
-  if (url) window.location.assign(url);
-}
 
 const HINTS: Record<AssetKind, string> = {
   video: "Dépose la vidéo ici, ou touche pour la choisir",
@@ -123,19 +119,10 @@ export function AssetsSection({ content, kind }: { content: ContentFull; kind: A
 
 function AssetActions({ asset, children }: { asset: Asset; children?: ReactNode }) {
   const { deleteAsset } = useData();
-  const toast = useToast();
   return (
     <div className="flex items-center gap-0.5">
       {children}
-      <IconButton
-        label="Télécharger"
-        onClick={async () => {
-          toast("Téléchargement…");
-          await downloadAsset(asset);
-        }}
-      >
-        <Download className="size-4" />
-      </IconButton>
+      <SaveToDevice assets={[asset]} variant="icon" />
       <IconButton
         label="Supprimer"
         onClick={() => confirm(`Supprimer « ${asset.file_name} » ?`) && deleteAsset(asset)}
@@ -149,11 +136,25 @@ function AssetActions({ asset, children }: { asset: Asset; children?: ReactNode 
 
 function VideoItem({ asset }: { asset: Asset }) {
   const url = useSignedUrl(asset.storage_path);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  // la page reste montée (cachée) quand on navigue : on coupe la lecture en partant
+  useLayoutEffect(() => {
+    const el = videoRef.current;
+    return () => el?.pause();
+  }, [url]);
   return (
     <div className="overflow-hidden rounded-2xl border border-line bg-surface">
       <div className="flex max-h-[70vh] justify-center bg-black">
         {url ? (
-          <video src={url} controls playsInline preload="metadata" className="max-h-[70vh] w-auto max-w-full" />
+          <video
+            ref={videoRef}
+            src={url}
+            controls
+            playsInline
+            preload="metadata"
+            className="max-h-[70vh] w-auto max-w-full"
+            onError={() => forgetSignedUrl(asset.storage_path)}
+          />
         ) : (
           <div className="aspect-video w-full" />
         )}

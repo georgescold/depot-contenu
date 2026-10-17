@@ -35,6 +35,12 @@ export async function POST(req: NextRequest) {
       .insert({ folder_id: folder.id, platform, handle: handleRaw, url, position })
       .select("*")
       .single();
+    if (error?.code === "23505") {
+      throw new ApiError(
+        409,
+        `Le compte ${accountLabel({ platform, handle: handleRaw })} existe déjà dans « ${ctx.path(folder.id)} » (même plateforme et même handle).`,
+      );
+    }
     if (error) throw dbFail(error, "création du compte");
 
     return json({ account: serializeAccount(data as Account, ctx) }, 201);

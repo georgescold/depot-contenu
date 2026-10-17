@@ -1,11 +1,11 @@
 "use client";
 
-import { CalendarDays, FolderTree, Library, LogOut, Plus, Settings } from "lucide-react";
+import { CalendarDays, FolderTree, Library, LogOut, Plus, RefreshCw, Settings, WifiOff } from "lucide-react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { supabase } from "@/lib/supabase/browser";
-import { DataProvider } from "./data/DataProvider";
+import { DataProvider, useData } from "./data/DataProvider";
 import { FolderTreeNav } from "./FolderTreeNav";
 import { NewContentModal } from "./NewContentModal";
 import { ToastProvider } from "./Toast";
@@ -34,53 +34,89 @@ export function Splash({ label }: { label?: string }) {
   );
 }
 
+/** Déconnexion : rechargement complet pour vider l'état gardé en mémoire (pages cachées, envois…). */
+export async function signOutAndLeave() {
+  await supabase().auth.signOut().catch(() => {});
+  window.location.assign("/login");
+}
+
 function AuthGate({ children }: { children: ReactNode }) {
-  const router = useRouter();
-  const [state, setState] = useState<"loading" | "ok" | "denied">("loading");
+  const [state, setState] = useState<"loading" | "ok" | "denied" | "error">("loading");
   const [email, setEmail] = useState("");
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     const sb = supabase();
     let alive = true;
-    sb.auth.getSession().then(async ({ data }) => {
+    (async () => {
+      const { data, error } = await sb.auth.getSession();
+      if (!alive) return;
+      if (error) return setState("error");
       const session = data.session;
-      if (!session) {
-        router.replace("/login");
-        return;
-      }
+      if (!session) return window.location.replace("/login");
       setEmail(session.user.email ?? "");
-      const { data: member } = await sb
+      const { data: member, error: mErr } = await sb
         .from("team_members")
         .select("user_id")
         .eq("user_id", session.user.id)
         .maybeSingle();
-      if (alive) setState(member ? "ok" : "denied");
-    });
+      if (!alive) return;
+      // une erreur réseau n'est pas un refus d'accès
+      if (mErr) return setState("error");
+      setState(member ? "ok" : "denied");
+    })();
     const { data: sub } = sb.auth.onAuthStateChange((event) => {
-      if (event === "SIGNED_OUT") router.replace("/login");
+      if (event === "SIGNED_OUT") window.location.assign("/login");
     });
+    const onOnline = () => setAttempt((n) => n + 1);
+    window.addEventListener("online", onOnline);
     return () => {
       alive = false;
       sub.subscription.unsubscribe();
+      window.removeEventListener("online", onOnline);
     };
-  }, [router]);
+  }, [attempt]);
 
   if (state === "loading") return <Splash />;
+  if (state === "error") return <OfflineScreen onRetry={() => (setState("loading"), setAttempt((n) => n + 1))} />;
   if (state === "denied") {
     return (
       <div className="flex min-h-dvh flex-col items-center justify-center gap-4 p-6 text-center">
         <p className="text-lg font-semibold">Accès non autorisé</p>
         <p className="max-w-sm text-sm text-muted">
-          Le compte {email} n&apos;est pas membre de l&apos;équipe. Demande à un membre de t&apos;ajouter depuis
+          Le compte {email} n&apos;est pas membre de l&apos;équipe. Demande au propriétaire de t&apos;ajouter depuis
           Réglages → Équipe.
         </p>
-        <Button onClick={() => supabase().auth.signOut()} icon={<LogOut className="size-4" />}>
+        <Button onClick={signOutAndLeave} icon={<LogOut className="size-4" />}>
           Se déconnecter
         </Button>
       </div>
     );
   }
   return <>{children}</>;
+}
+
+function OfflineScreen({ onRetry, message }: { onRetry: () => void; message?: string }) {
+  return (
+    <div className="flex min-h-dvh flex-col items-center justify-center gap-4 p-6 text-center">
+      <WifiOff className="size-8 text-muted" />
+      <p className="text-lg font-semibold">Connexion impossible</p>
+      <p className="max-w-sm text-sm text-muted">
+        {message ?? "Vérifie ta connexion internet."} L&apos;app réessaie toute seule dès que le réseau revient.
+      </p>
+      <Button variant="primary" onClick={onRetry} icon={<RefreshCw className="size-4" />}>
+        Réessayer
+      </Button>
+    </div>
+  );
+}
+
+/** Tant que les données n'ont jamais été chargées : écran d'attente ou d'erreur (jamais une app « vide »). */
+function DataGate({ children }: { children: ReactNode }) {
+  const { ready, error, reload } = useData();
+  if (ready) return <>{children}</>;
+  if (error) return <OfflineScreen message={error} onRetry={() => reload()} />;
+  return <Splash />;
 }
 
 function isActive(pathname: string, href: string) {
@@ -90,20 +126,32 @@ function isActive(pathname: string, href: string) {
 
 function ShellUI({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+  const { contentById, online, error } = useData();
   const [newOpen, setNewOpen] = useState(false);
   const [newFolder, setNewFolder] = useState<string | null>(null);
 
   const openNewContent = useCallback(
     (folderId?: string | null) => {
-      const fromPath = pathname.startsWith("/projets/") ? pathname.split("/")[2] : null;
+      // dossier proposé : celui de la page ouverte (dossier, ou dossier du contenu affiché)
+      const seg = pathname.split("/");
+      const fromPath =
+        seg[1] === "projets" && seg[2] ? seg[2] : seg[1] === "contenus" && seg[2] ? contentById.get(seg[2])?.folder_id : null;
       setNewFolder(folderId ?? fromPath ?? null);
       setNewOpen(true);
     },
-    [pathname],
+    [pathname, contentById],
   );
 
   return (
     <ShellCtx value={{ openNewContent }}>
+      {(!online || error) && (
+        <div className="pt-safe sticky top-0 z-40 bg-warning-soft text-warning">
+          <p className="flex items-center justify-center gap-2 px-4 py-1.5 text-center text-xs font-medium">
+            <WifiOff className="size-3.5 shrink-0" />
+            {!online ? "Hors connexion : les modifications ne seront pas enregistrées." : `Synchronisation impossible (${error}).`}
+          </p>
+        </div>
+      )}
       <div className="md:flex">
         {/* Barre latérale (ordinateur) */}
         <aside className="sticky top-0 hidden h-dvh w-64 shrink-0 flex-col border-r border-line bg-surface md:flex">
@@ -198,9 +246,11 @@ export function AppShell({ children }: { children: ReactNode }) {
     <ToastProvider>
       <AuthGate>
         <DataProvider>
-          <UploadProvider>
-            <ShellUI>{children}</ShellUI>
-          </UploadProvider>
+          <DataGate>
+            <UploadProvider>
+              <ShellUI>{children}</ShellUI>
+            </UploadProvider>
+          </DataGate>
         </DataProvider>
       </AuthGate>
     </ToastProvider>
@@ -223,12 +273,10 @@ export function PageHeader({
     <header className="pt-safe">
       <div className="mx-auto max-w-6xl px-4 pt-4 pb-3 md:px-8 md:pt-8 md:pb-4">
         <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h1 className="truncate text-xl font-semibold tracking-tight md:text-2xl">{title}</h1>
-            {subtitle && <div className="mt-0.5 text-sm text-muted">{subtitle}</div>}
-          </div>
+          <h1 className="line-clamp-2 min-w-0 text-xl font-semibold tracking-tight break-words md:text-2xl">{title}</h1>
           {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
         </div>
+        {subtitle && <div className="mt-0.5 text-sm text-muted">{subtitle}</div>}
         {children && <div className="mt-3">{children}</div>}
       </div>
     </header>

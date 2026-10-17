@@ -4,7 +4,7 @@ import { contentStatus } from "@/lib/status";
 import type { Account, Content, Publication } from "@/lib/types";
 import { getAdminClient } from "@/lib/supabase/admin";
 import { ApiError, dbFail, handle, json, readObject } from "@/lib/api/http";
-import { newPubRow, parsePubInput, pubColumns } from "@/lib/api/publications";
+import { newPubRow, parsePubInput, pastDateWarning, pubColumns } from "@/lib/api/publications";
 import {
   accountLabel,
   candidatesForFolder,
@@ -66,20 +66,45 @@ export async function PUT(req: NextRequest, ctx: Ctx) {
     const { content, pubs, folders, candidates } = await loadPubContext(sb, id);
     const account: Account = resolveAccountRef(folders, candidates, input.account, scopeOf(folders, content));
 
-    const existing = pubs.find((p) => p.account_id === account.id);
+    let existing = pubs.find((p) => p.account_id === account.id);
     const cols = pubColumns(input);
-    let row: Publication;
-    if (existing) {
+    if (existing && !Object.keys(cols).length) {
+      throw new ApiError(400, "Rien à modifier : fournis au moins un champ parmi date, time, title, description, posted, post_url.");
+    }
+    const update = async (pubId: string): Promise<Publication> => {
       if (!Object.keys(cols).length) {
-        throw new ApiError(400, "Rien à modifier : fournis au moins un champ parmi date, time, title, description, posted, post_url.");
+        const { data, error } = await sb.from("publications").select("*").eq("id", pubId).single();
+        if (error) throw dbFail(error, "lecture de la publication");
+        return data as Publication;
       }
-      const { data, error } = await sb.from("publications").update(cols).eq("id", existing.id).select("*").single();
+      const { data, error } = await sb.from("publications").update(cols).eq("id", pubId).select("*").single();
       if (error) throw dbFail(error, "mise à jour de la publication");
-      row = data as Publication;
+      return data as Publication;
+    };
+
+    let row: Publication;
+    let created = false;
+    if (existing) {
+      row = await update(existing.id);
     } else {
       const { data, error } = await sb.from("publications").insert(newPubRow(id, account, input)).select("*").single();
-      if (error) throw dbFail(error, "création de la publication");
-      row = data as Publication;
+      if (error?.code === "23505") {
+        // Course : une autre requête vient de créer la publication (contenu, compte). On la relit et on la met à jour.
+        const { data: again, error: re } = await sb
+          .from("publications")
+          .select("*")
+          .eq("content_id", id)
+          .eq("account_id", account.id)
+          .maybeSingle();
+        if (re) throw dbFail(re, "lecture de la publication");
+        if (!again) throw dbFail(error, "création de la publication");
+        existing = again as Publication;
+        row = await update(existing.id);
+      } else {
+        if (error) throw dbFail(error, "création de la publication");
+        row = data as Publication;
+        created = true;
+      }
     }
 
     const all = [...pubs.filter((p) => p.id !== row.id), row];
@@ -87,14 +112,18 @@ export async function PUT(req: NextRequest, ctx: Ctx) {
     if (row.scheduled_time && !row.scheduled_date) {
       warnings.push(`${accountLabel(account)} : heure sans date, la publication n'est pas programmée.`);
     }
+    if (input.date !== undefined || input.time !== undefined) {
+      const past = pastDateWarning(account, { date: row.scheduled_date, time: row.scheduled_time, posted: row.posted });
+      if (past) warnings.push(past);
+    }
     return json(
       {
         publication: serializePublication(row, account),
-        created: !existing,
+        created,
         content: contentSummary(content, all, appOrigin(req)),
         warnings,
       },
-      existing ? 200 : 201,
+      created ? 201 : 200,
     );
   });
 }

@@ -23,6 +23,8 @@ export function dbFail(error: PostgrestError, what: string): ApiError {
     case "22007":
     case "22008":
     case "22001":
+    case "22P05":
+    case "22021":
       return new ApiError(400, `Valeur invalide (${what}) : ${error.message}`);
     case "PGRST116":
       return new ApiError(404, `Introuvable (${what}).`);

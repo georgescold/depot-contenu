@@ -1,7 +1,29 @@
 import type { Account } from "@/lib/types";
 import { ApiError } from "./errors";
 import { isObj, type Obj } from "./http";
-import { optBool, optDate, optText, optTime } from "./validate";
+import { accountLabel } from "./resolve";
+import { nowParisHHMM, optBool, optDate, optText, optTime, todayParis } from "./validate";
+
+/**
+ * Avertissement si une publication non postée est programmée dans le passé (heure de Paris).
+ * `null` si la date est à venir, absente, ou si la publication est déjà marquée postée.
+ */
+export function pastDateWarning(
+  account: Account,
+  p: { date?: string | null; time?: string | null; posted?: boolean | null },
+): string | null {
+  if (!p.date || p.posted) return null;
+  const today = todayParis();
+  const who = accountLabel(account);
+  if (p.date < today) {
+    return `${who} : la date ${p.date} est déjà passée (aujourd'hui : ${today}, heure de Paris). La publication apparaîtra « en retard ».`;
+  }
+  const now = nowParisHHMM();
+  if (p.date === today && p.time && p.time.slice(0, 5) < now) {
+    return `${who} : ${p.date} à ${p.time.slice(0, 5)} est déjà passé (il est ${now} à Paris).`;
+  }
+  return null;
+}
 
 /** Champs d'une publication tels qu'envoyés par le client (undefined = non fourni). */
 export interface PubInput {

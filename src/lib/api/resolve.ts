@@ -28,10 +28,16 @@ export function normName(s: string): string {
     .trim();
 }
 
-/** "Projet/Sous-projet > Angle" → ["Projet", "Sous-projet", "Angle"] */
+/**
+ * "Projet/Sous-projet > Angle" → ["Projet", "Sous-projet", "Angle"].
+ * Séparateurs : « / », « > » (que l'UI interdit dans les noms) et « › » (séparateur d'affichage de l'UI).
+ */
 export function splitFolderPath(p: string): string[] {
+  if (/[\u0000-\u001f\u007f]/.test(p.replace(/[\t\r\n]/g, " "))) {
+    throw new ApiError(400, "Chemin de dossier invalide : il contient des caractères de contrôle.");
+  }
   return p
-    .split(/[/>›»\\]/)
+    .split(/[/>›]/)
     .map((s) => s.replace(/\s+/g, " ").trim())
     .filter(Boolean);
 }
@@ -49,6 +55,10 @@ export class FolderCtx {
   }
   replace(f: Folder) {
     this.folders = this.folders.map((x) => (x.id === f.id ? f : x));
+    this.index = buildFolderIndex(this.folders);
+  }
+  remove(id: string) {
+    this.folders = this.folders.filter((x) => x.id !== id);
     this.index = buildFolderIndex(this.folders);
   }
   get(id: string): Folder | undefined {
@@ -74,7 +84,7 @@ export class FolderCtx {
 
 export async function loadFolderCtx(sb: SupabaseClient): Promise<FolderCtx> {
   const rows = await fetchAll<Folder>(
-    (from, to) => sb.from("folders").select("*").order("created_at").range(from, to),
+    (from, to) => sb.from("folders").select("*").order("created_at").order("id").range(from, to),
     "lecture des dossiers",
   );
   return new FolderCtx(rows);
@@ -113,6 +123,86 @@ export async function resolveFolder(
 
   let parent: Folder | null = null;
   const created: Folder[] = [];
+  try {
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i];
+      const siblings = childrenOf(ctx.index, parent?.id ?? null);
+      const matches = siblings.filter((f) => normName(f.name) === normName(seg));
+      if (matches.length > 1) {
+        throw new ApiError(409, `Plusieurs dossiers s'appellent « ${seg} » dans « ${parent ? ctx.path(parent.id) : "(racine)"} » : utilise l'id.`, {
+          choices: matches.map((f) => ({ id: f.id, path: ctx.path(f.id) })),
+        });
+      }
+      if (matches.length === 1) {
+        parent = matches[0];
+        continue;
+      }
+      if (!opts.create) {
+        const where = parent ? `dans « ${ctx.path(parent.id)} »` : "à la racine";
+        const existing = siblings.map((f) => f.name);
+        throw new ApiError(
+          404,
+          `Dossier « ${seg} » introuvable ${where}. ` +
+            (existing.length ? `Dossiers existants : ${existing.join(", ")}. ` : "") +
+            `Ajoute « create_folders: true » pour le créer.`,
+          { missing: segments.slice(0, i + 1).join(PATH_SEP) },
+        );
+      }
+      const position = siblings.reduce((m, f) => Math.max(m, f.position + 1), 0);
+      const roots = childrenOf(ctx.index, null).length;
+      const color = parent ? parent.color : FOLDER_COLORS[roots % FOLDER_COLORS.length];
+      const { data, error } = await sb
+        .from("folders")
+        .insert({ parent_id: parent?.id ?? null, name: seg, position, color })
+        .select("*")
+        .single();
+      if (error?.code === "23505") {
+        // Course : un autre envoi vient de créer ce dossier. On le relit et on le réutilise.
+        const existing = await findSibling(sb, parent?.id ?? null, seg);
+        if (!existing) throw dbFail(error, `création du dossier « ${seg} »`);
+        if (!ctx.get(existing.id)) ctx.add(existing);
+        parent = existing;
+        continue;
+      }
+      if (error) throw dbFail(error, `création du dossier « ${seg} »`);
+      const f = data as Folder;
+      ctx.add(f);
+      created.push(f);
+      parent = f;
+    }
+  } catch (err) {
+    // Rien de partiel : on retire les dossiers créés par cet appel (du plus profond au plus haut).
+    await deleteFolders(sb, created);
+    for (const f of created) ctx.remove(f.id);
+    throw err;
+  }
+  return { folder: parent!, created };
+}
+
+export interface FolderPreview {
+  /** Dossier existant le plus profond du chemin (null si même la racine manque). */
+  existing: Folder | null;
+  /** Segments qui seraient créés (create_folders). */
+  missing: string[];
+  /** Chemin complet tel qu'il serait après création. */
+  path: string;
+}
+
+/** Comme resolveFolder, sans rien écrire : pour valider une requête avant de la jouer (dry_run). */
+export function previewFolder(ctx: FolderCtx, ref: unknown, opts: { create?: boolean; label?: string } = {}): FolderPreview {
+  const label = opts.label ?? "folder";
+  if (typeof ref !== "string" || !ref.trim()) {
+    throw new ApiError(400, `Le champ « ${label} » est obligatoire (uuid ou chemin « Projet/Sous-projet/Angle »).`);
+  }
+  const raw = ref.trim();
+  if (isUuid(raw)) {
+    const f = ctx.get(raw.toLowerCase());
+    if (!f) throw new ApiError(404, `Aucun dossier avec l'id ${raw}.`);
+    return { existing: f, missing: [], path: ctx.path(f.id) };
+  }
+  const segments = splitFolderPath(raw);
+  if (segments.length === 0) throw new ApiError(400, `Chemin de dossier vide : « ${raw} ».`);
+  let parent: Folder | null = null;
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
     const siblings = childrenOf(ctx.index, parent?.id ?? null);
@@ -137,21 +227,27 @@ export async function resolveFolder(
         { missing: segments.slice(0, i + 1).join(PATH_SEP) },
       );
     }
-    const position = siblings.reduce((m, f) => Math.max(m, f.position + 1), 0);
-    const roots = childrenOf(ctx.index, null).length;
-    const color = parent ? parent.color : FOLDER_COLORS[roots % FOLDER_COLORS.length];
-    const { data, error } = await sb
-      .from("folders")
-      .insert({ parent_id: parent?.id ?? null, name: seg, position, color })
-      .select("*")
-      .single();
-    if (error) throw dbFail(error, `création du dossier « ${seg} »`);
-    const f = data as Folder;
-    ctx.add(f);
-    created.push(f);
-    parent = f;
+    const missing = segments.slice(i);
+    return { existing: parent, missing, path: [...(parent ? [ctx.path(parent.id)] : []), ...missing].join(PATH_SEP) };
   }
-  return { folder: parent!, created };
+  return { existing: parent, missing: [], path: ctx.path(parent!.id) };
+}
+
+/** Relit en base le dossier `name` sous `parentId` (même règle que l'index unique : casse et espaces ignorés). */
+async function findSibling(sb: SupabaseClient, parentId: string | null, name: string): Promise<Folder | null> {
+  const q = sb.from("folders").select("*");
+  const { data, error } = await (parentId ? q.eq("parent_id", parentId) : q.is("parent_id", null));
+  if (error) throw dbFail(error, "lecture des dossiers");
+  const rows = (data ?? []) as Folder[];
+  const key = name.trim().toLowerCase();
+  return rows.find((f) => f.name.trim().toLowerCase() === key) ?? rows.find((f) => normName(f.name) === normName(name)) ?? null;
+}
+
+/** Supprime des dossiers créés pour l'occasion (ordre inverse de création). */
+export async function deleteFolders(sb: SupabaseClient, created: Folder[]): Promise<void> {
+  for (const f of [...created].reverse()) {
+    await sb.from("folders").delete().eq("id", f.id);
+  }
 }
 
 /* =====================================================================
@@ -160,7 +256,7 @@ export async function resolveFolder(
 
 export async function loadAccounts(sb: SupabaseClient): Promise<Account[]> {
   return fetchAll<Account>(
-    (from, to) => sb.from("accounts").select("*").order("created_at").range(from, to),
+    (from, to) => sb.from("accounts").select("*").order("created_at").order("id").range(from, to),
     "lecture des comptes",
   );
 }

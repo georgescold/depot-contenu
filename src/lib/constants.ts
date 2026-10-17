@@ -62,7 +62,11 @@ export const FOLDER_COLORS = [
   "#64748b",
 ];
 
-export const STORAGE_BUCKET = "media";
+/** Taille max par fichier : 4 Go (un envoi direct B2 en une fois est plafonné à 5 Go). */
+export const MAX_FILE_MB = Number(process.env.NEXT_PUBLIC_MAX_FILE_MB ?? 4096);
 
-/** Limite par fichier côté Supabase (50 Mo en plan gratuit). */
-export const MAX_FILE_MB = Number(process.env.NEXT_PUBLIC_MAX_FILE_MB ?? 50);
+/** Au-delà, l'envoi se fait en plusieurs parties (reprise en cas de coupure, plus rapide). */
+export const MULTIPART_THRESHOLD = 100 * 1024 * 1024;
+
+/** Espace gratuit chez Backblaze B2. */
+export const FREE_STORAGE_GB = 10;

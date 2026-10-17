@@ -1,16 +1,17 @@
 import type { NextRequest } from "next/server";
-import type { SupabaseClient } from "@supabase/supabase-js";
 import { ASSET_KIND_LIST } from "@/lib/constants";
 import { contentStatus, isLate, type ContentStatus } from "@/lib/status";
-import type { Account, AssetKind, Content, Folder, Format, Publication } from "@/lib/types";
+import type { Account, AssetKind, Content, Format, Publication } from "@/lib/types";
 import { getAdminClient } from "@/lib/supabase/admin";
 import { ApiError, dbFail, fetchAll, handle, json, readObject } from "@/lib/api/http";
-import { newPubRow, parsePubInput } from "@/lib/api/publications";
+import { newPubRow, parsePubInput, pastDateWarning, type PubInput } from "@/lib/api/publications";
 import {
   accountLabel,
   candidatesForFolder,
+  deleteFolders,
   loadAccounts,
   loadFolderCtx,
+  previewFolder,
   resolveAccountRef,
   resolveFolder,
   type FolderCtx,
@@ -91,7 +92,7 @@ export async function GET(req: NextRequest) {
       let query = sb.from("contents").select(LIST_SELECT, count ? { count: "exact" } : undefined);
       if (folderIds) query = query.in("folder_id", folderIds);
       if (format) query = query.eq("format", format);
-      if (q) query = query.ilike("title", `%${q.replace(/[\\%_]/g, (c) => "\\" + c)}%`);
+      if (q) query = query.ilike("title", `%${likeSafe(q)}%`);
       return query.order("created_at", { ascending: false }).order("id");
     };
 
@@ -120,13 +121,39 @@ export async function GET(req: NextRequest) {
   });
 }
 
-async function rollbackFolders(sb: SupabaseClient, created: Folder[]) {
-  for (const f of [...created].reverse()) {
-    await sb.from("folders").delete().eq("id", f.id);
-  }
+/**
+ * Neutralise les caractères spéciaux de PostgREST et de LIKE (* % _ , ( ) \) en les remplaçant
+ * par « _ » (= n'importe quel caractère, donc aussi le caractère lui-même) : ni joker ni filtre injecté.
+ * (PostgREST transforme « * » en « % » avant l'échappement, d'où le remplacement plutôt qu'un « \ ».)
+ */
+function likeSafe(q: string): string {
+  return q.replace(/[*%_,()\\]/g, "_");
 }
 
-/** POST /api/v1/contents { folder, create_folders?, title, format?, notes?, publications? } */
+/** Résout les comptes des publications, refuse les doublons et calcule les avertissements. */
+function resolvePublications(ctx: FolderCtx, accounts: Account[], folderId: string | null, scopePath: string, inputs: PubInput[]) {
+  const cands = folderId ? candidatesForFolder(ctx, accounts, folderId) : [];
+  const scope = `dossier « ${scopePath} »`;
+  const resolved = inputs.map((p) => ({ input: p, account: resolveAccountRef(ctx, cands, p.account, scope) }));
+  const seen = new Set<string>();
+  const warnings: string[] = [];
+  for (const r of resolved) {
+    if (seen.has(r.account.id)) {
+      throw new ApiError(400, `Deux publications visent le même compte (${accountLabel(r.account)}) : une seule par compte.`);
+    }
+    seen.add(r.account.id);
+    warnings.push(...publicationWarnings({ title: r.input.title ?? "", description: r.input.description ?? "" }, r.account));
+    if (r.input.time && !r.input.date) warnings.push(`${accountLabel(r.account)} : heure sans date, la publication n'est pas programmée.`);
+    const past = pastDateWarning(r.account, r.input);
+    if (past) warnings.push(past);
+  }
+  return { resolved, warnings };
+}
+
+/**
+ * POST /api/v1/contents { folder, create_folders?, title, format?, notes?, publications?, dry_run? }
+ * Avec dry_run: true, tout est validé (dossier, comptes, dates) mais rien n'est écrit.
+ */
 export async function POST(req: NextRequest) {
   return handle(req, async () => {
     const body = await readObject(req);
@@ -136,27 +163,40 @@ export async function POST(req: NextRequest) {
     const rawPubs = body.publications ?? [];
     if (!Array.isArray(rawPubs)) throw new ApiError(400, "« publications » doit être une liste.");
     const inputs = rawPubs.map((p, i) => parsePubInput(p, `publication (n°${i + 1})`));
+    const create = optBool(body, "create_folders");
 
     const sb = getAdminClient();
     const [ctx, accounts] = await Promise.all([loadFolderCtx(sb), loadAccounts(sb)]);
-    const { folder, created } = await resolveFolder(sb, ctx, body.folder, {
-      create: optBool(body, "create_folders"),
-    });
+
+    if (optBool(body, "dry_run")) {
+      const preview = previewFolder(ctx, body.folder, { create });
+      // Les dossiers à créer n'ont pas encore de comptes : seuls ceux des dossiers existants comptent.
+      const { resolved, warnings } = resolvePublications(ctx, accounts, preview.existing?.id ?? null, preview.path, inputs);
+      return json({
+        dry_run: true,
+        title,
+        format,
+        folder_id: preview.missing.length ? null : preview.existing!.id,
+        folder_path: preview.path,
+        missing_folders: preview.missing,
+        publications: resolved.map((r) => ({
+          account: { id: r.account.id, platform: r.account.platform, handle: r.account.handle, ref: accountLabel(r.account) },
+          date: r.input.date ?? null,
+          time: r.input.time ?? null,
+        })),
+        warnings,
+      });
+    }
+
+    const { folder, created } = await resolveFolder(sb, ctx, body.folder, { create });
 
     let contentId: string | null = null;
     let content: Content;
-    const warnings: string[] = [];
+    let warnings: string[] = [];
     try {
-      const cands = candidatesForFolder(ctx, accounts, folder.id);
-      const scope = `dossier « ${ctx.path(folder.id)} »`;
-      const resolved = inputs.map((p) => ({ input: p, account: resolveAccountRef(ctx, cands, p.account, scope) }));
-      const seen = new Set<string>();
-      for (const r of resolved) {
-        if (seen.has(r.account.id)) {
-          throw new ApiError(400, `Deux publications visent le même compte (${accountLabel(r.account)}) : une seule par compte.`);
-        }
-        seen.add(r.account.id);
-      }
+      const checked = resolvePublications(ctx, accounts, folder.id, ctx.path(folder.id), inputs);
+      const resolved = checked.resolved;
+      warnings = checked.warnings;
 
       const { data, error } = await sb
         .from("contents")
@@ -171,17 +211,11 @@ export async function POST(req: NextRequest) {
         const rows = resolved.map((r) => newPubRow(contentId!, r.account, r.input));
         const { error: pe } = await sb.from("publications").insert(rows);
         if (pe) throw dbFail(pe, "création des publications");
-        for (const r of resolved) {
-          warnings.push(
-            ...publicationWarnings({ title: r.input.title ?? "", description: r.input.description ?? "" }, r.account),
-          );
-          if (r.input.time && !r.input.date) warnings.push(`${accountLabel(r.account)} : heure sans date, la publication n'est pas programmée.`);
-        }
       }
     } catch (err) {
       // Rien de partiel : on annule le contenu et les dossiers créés pour l'occasion.
       if (contentId) await sb.from("contents").delete().eq("id", contentId);
-      if (created.length) await rollbackFolders(sb, created);
+      if (created.length) await deleteFolders(sb, created);
       throw err;
     }
 

@@ -118,6 +118,18 @@ export function todayParis(d = new Date()): string {
   }).format(d);
 }
 
+/** Heure actuelle à Paris (HH:MM). */
+export function nowParisHHMM(d = new Date()): string {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/Paris",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(d);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "00";
+  return `${get("hour")}:${get("minute")}`;
+}
+
 export function addDays(iso: string, days: number): string {
   const [y, m, d] = iso.split("-").map(Number);
   const dt = new Date(Date.UTC(y, m - 1, d + days));

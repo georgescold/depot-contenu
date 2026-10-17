@@ -1,7 +1,7 @@
 "use client";
 
 import { Check } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FOLDER_COLORS } from "@/lib/constants";
 import { descendantIds } from "@/lib/folders";
 import type { Folder } from "@/lib/types";
@@ -42,18 +42,27 @@ function FolderForm({ open, onClose, folder, parentId, onSaved }: Props) {
   const title = folder ? "Modifier le dossier" : isRoot ? "Nouveau projet" : `Nouveau dossier dans « ${parentName} »`;
   const exclude = folder ? descendantIds(index, folder.id) : undefined;
 
+  const busyRef = useRef(false);
+  const alive = useRef(true);
+  useEffect(() => () => void (alive.current = false), []);
+
   const submit = async () => {
     const n = name.trim();
-    if (!n) return;
+    if (!n || busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
+    let saved: Folder | null = null;
     if (folder) {
-      await updateFolder(folder.id, { name: n, color, description, parent_id: parent || null });
-      onSaved?.({ ...folder, name: n, color, description, parent_id: parent || null });
+      const ok = await updateFolder(folder.id, { name: n, color, description, parent_id: parent || null });
+      if (ok) saved = { ...folder, name: n, color, description, parent_id: parent || null };
     } else {
-      const f = await createFolder({ name: n, color, description, parent_id: parent || null });
-      if (f) onSaved?.(f);
+      saved = await createFolder({ name: n, color, description, parent_id: parent || null });
     }
+    busyRef.current = false;
+    if (!alive.current) return; // fenêtre fermée pendant l'enregistrement : on ne navigue pas
     setBusy(false);
+    if (!saved) return; // erreur affichée : la fenêtre reste ouverte pour corriger
+    onSaved?.(saved);
     onClose();
   };
 
@@ -88,7 +97,7 @@ function FolderForm({ open, onClose, folder, parentId, onSaved }: Props) {
             placeholder={isRoot ? "Ex. Compaatible" : "Ex. Angle jalousie"}
           />
         </Field>
-        <Field label="Couleur">
+        <Field label="Couleur" group>
           <div className="flex flex-wrap gap-2">
             {FOLDER_COLORS.map((c) => (
               <button

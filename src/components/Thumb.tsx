@@ -1,7 +1,8 @@
 "use client";
 
 import { Film, GalleryHorizontalEnd, Image as ImageIcon } from "lucide-react";
-import { useSignedUrl } from "@/lib/signed-urls";
+import { useEffect, useRef, useState } from "react";
+import { forgetSignedUrl, useSignedUrl } from "@/lib/signed-urls";
 import type { Asset, ContentFull } from "@/lib/types";
 import { cn } from "./ui";
 
@@ -26,17 +27,36 @@ export function Thumb({
 }) {
   const cover = coverAsset(content);
   const video = cover ? undefined : firstVideo(content);
-  const url = useSignedUrl(cover?.storage_path ?? video?.storage_path);
+  const ref = useRef<HTMLDivElement>(null);
+  // une vidéo n'est demandée que lorsque la vignette arrive à l'écran (grilles de centaines de contenus)
+  const [visible, setVisible] = useState(!video);
+  useEffect(() => {
+    if (visible || !ref.current) return;
+    const io = new IntersectionObserver((entries) => entries.some((e) => e.isIntersecting) && setVisible(true), {
+      rootMargin: "200px",
+    });
+    io.observe(ref.current);
+    return () => io.disconnect();
+  }, [visible]);
+  const path = cover?.storage_path ?? (visible ? video?.storage_path : undefined);
+  const url = useSignedUrl(path);
   const Icon = content.format === "carousel" ? GalleryHorizontalEnd : content.format === "photo" ? ImageIcon : Film;
 
   return (
     <div
+      ref={ref}
       className={cn("relative overflow-hidden bg-surface-2", className)}
       style={!url && color ? { background: `color-mix(in srgb, ${color} 14%, var(--surface-2))` } : undefined}
     >
       {url && cover && (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={url} alt="" loading="lazy" className="absolute inset-0 size-full object-cover" />
+        <img
+          src={url}
+          alt=""
+          loading="lazy"
+          className="absolute inset-0 size-full object-cover"
+          onError={() => path && forgetSignedUrl(path)}
+        />
       )}
       {url && video && (
         <video
@@ -45,6 +65,7 @@ export function Thumb({
           playsInline
           preload="metadata"
           className="absolute inset-0 size-full object-cover"
+          onError={() => path && forgetSignedUrl(path)}
         />
       )}
       {!url && (
