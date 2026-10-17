@@ -307,3 +307,29 @@ alter table public.contents add column if not exists files_archived_at timestamp
 -- Délai (en jours) entre la dernière publication et la suppression des fichiers ; null = jamais.
 insert into public.app_settings (key, value) values ('archive_after_days', '3'::jsonb)
 on conflict (key) do nothing;
+
+-- =====================================================================
+-- Personnes (tags « Enzo », « Loys »…) et attributions
+-- Une publication revient à : la personne du contenu, sinon celle du compte, sinon celle du dossier le plus proche.
+-- =====================================================================
+create table if not exists public.people (
+  id         uuid primary key default gen_random_uuid(),
+  name       text not null,
+  color      text not null default '#6366f1',
+  position   int  not null default 0,
+  created_at timestamptz not null default now()
+);
+create unique index if not exists people_unique_name on public.people (lower(btrim(name)));
+
+alter table public.contents add column if not exists assignee_id uuid references public.people(id) on delete set null;
+alter table public.accounts add column if not exists assignee_id uuid references public.people(id) on delete set null;
+alter table public.folders  add column if not exists assignee_id uuid references public.people(id) on delete set null;
+create index if not exists contents_assignee_idx on public.contents(assignee_id);
+
+grant select, insert, update, delete on public.people to authenticated;
+grant all on public.people to service_role;
+revoke all on public.people from anon;
+alter table public.people enable row level security;
+drop policy if exists team_all on public.people;
+create policy team_all on public.people for all to authenticated
+  using (public.is_team_member()) with check (public.is_team_member());

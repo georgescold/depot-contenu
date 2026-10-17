@@ -7,7 +7,9 @@ import { folderColor, folderPath } from "@/lib/folders";
 import { formatTime, shortDate } from "@/lib/format";
 import { contentStatus, STATUS_INFO, todayISO } from "@/lib/status";
 import type { ContentFull } from "@/lib/types";
+import { effectiveAssignee } from "@/lib/assignee";
 import { useData } from "./data/DataProvider";
+import { PersonBadge } from "./people";
 import { Thumb } from "./Thumb";
 import { cn, PlatformBadge, Pill } from "./ui";
 
@@ -22,12 +24,14 @@ export function nextPublication(c: ContentFull) {
 }
 
 export function ContentCard({ content, showPath = true }: { content: ContentFull; showPath?: boolean }) {
-  const { index, accountById } = useData();
+  const { index, accountById, personById } = useData();
   const status = contentStatus(content.publications);
   const info = STATUS_INFO[status];
   const color = folderColor(index, content.folder_id);
   const next = nextPublication(content);
   const live = content.assets.filter((a) => !a.archived_at);
+  const eff = effectiveAssignee(index, content);
+  const person = eff ? personById.get(eff.personId) : undefined;
   const videos = live.filter((a) => a.kind === "video").length;
   const photos = live.filter((a) => a.kind === "photo").length;
 
@@ -43,6 +47,11 @@ export function ContentCard({ content, showPath = true }: { content: ContentFull
             {info.label}
           </Pill>
         </div>
+        {person && (
+          <div className="absolute top-2 right-2 rounded-full bg-surface/90 p-0.5 shadow-sm">
+            <PersonBadge person={person} size="sm" muted={eff?.source !== "content"} />
+          </div>
+        )}
         {(videos > 0 || photos > 1) && (
           <div className="absolute right-2 bottom-2 flex gap-1 text-[11px] font-medium text-white">
             {videos > 0 && (

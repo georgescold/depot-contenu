@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 
-const VERSION = "2.0.0";
+const VERSION = "2.1.0";
 
 if (Number(process.versions.node.split(".")[0]) < 20) {
   process.stderr.write(`Erreur : Node.js ${process.versions.node} détecté, ce CLI demande Node 20 ou plus récent (https://nodejs.org).\n`);
@@ -50,17 +50,19 @@ const SPECS = {
   config: { args: [0, 0], flags: ["url", "key"] },
   me: { args: [0, 0], flags: [] },
   folders: { args: [0, 0], flags: [] },
-  mkdir: { args: [1, 1], flags: ["color", "description"] },
-  account: { args: [1, 1], flags: ["folder", "platform", "handle", "url", "create-folders"] },
-  list: { args: [0, 0], flags: ["folder", "status", "format", "q", "limit"] },
+  people: { args: [0, 2], flags: ["color"] },
+  mkdir: { args: [1, 1], flags: ["color", "description", "assignee"] },
+  folder: { args: [2, 2], flags: ["assignee", "name", "color", "description"] },
+  account: { args: [1, 2], flags: ["folder", "platform", "handle", "url", "create-folders", "assignee"] },
+  list: { args: [0, 0], flags: ["folder", "status", "format", "q", "limit", "assignee"] },
   get: { args: [1, 1], flags: [] },
   push: { args: [1, 1], flags: ["rollback"] },
   upload: { args: [2, Infinity], flags: ["kind"] },
-  edit: { args: [1, 1], flags: ["title", "format", "notes", "notes-file", "folder", "create-folders"] },
+  edit: { args: [1, 1], flags: ["title", "format", "notes", "notes-file", "folder", "create-folders", "assignee"] },
   schedule: { args: [1, 1], flags: ["account", "date", "time", "title", "description", "description-file", "post-url"] },
   unschedule: { args: [1, 1], flags: ["account"] },
   posted: { args: [1, 1], flags: ["account", "url", "undo"] },
-  calendar: { args: [0, 0], flags: ["from", "to", "folder", "account", "include-posted"] },
+  calendar: { args: [0, 0], flags: ["from", "to", "folder", "account", "include-posted", "assignee"] },
   "rm-file": { args: [1, 1], flags: [] },
   "set-kind": { args: [2, 2], flags: [] },
   delete: { args: [1, 1], flags: ["yes"] },
@@ -70,17 +72,19 @@ const BOOL_FLAGS = new Set(["json", "help", "yes", "undo", "include-posted", "cr
 
 const USAGE = {
   config: `config --url <https://app> --key <dpc_…|->`,
-  mkdir: `mkdir "Projet/Sous-projet/Angle" [--color #hex] [--description …]`,
-  account: `account add --folder <chemin> --platform <instagram|tiktok|youtube|…> --handle <@x> [--url …] [--create-folders]`,
-  list: `list [--folder …] [--status draft|scheduled|late|partial|posted] [--format …] [--q …] [--limit 50]`,
+  people: `people  |  people add <nom> [--color #hex]`,
+  mkdir: `mkdir "Projet/Sous-projet/Angle" [--color #hex] [--description …] [--assignee <personne>]`,
+  folder: `folder edit <chemin|id> [--assignee <personne>|none] [--name …] [--color #hex] [--description …]`,
+  account: `account add --folder <chemin> --platform <instagram|tiktok|youtube|…> --handle <@x> [--url …] [--assignee <personne>] [--create-folders]  |  account edit <accountId> [--assignee <personne>|none] [--handle …] [--url …]`,
+  list: `list [--folder …] [--status draft|scheduled|late|partial|posted] [--format …] [--q …] [--assignee <personne>|none] [--limit 50]`,
   get: `get <contentId>`,
   push: `push <manifest.json> [--rollback]`,
   upload: `upload <contentId> <fichier|dossier|fichier:type>… [--kind video|thumbnail|photo|other]`,
-  edit: `edit <contentId> [--title …] [--format …] [--notes … | --notes-file <fichier>] [--folder <chemin>] [--create-folders]`,
+  edit: `edit <contentId> [--title …] [--format …] [--notes … | --notes-file <fichier>] [--folder <chemin>] [--create-folders] [--assignee <personne>|none]`,
   schedule: `schedule <contentId> --account <réf> --date AAAA-MM-JJ|none [--time HH:MM|none] [--title …] [--description … | --description-file <fichier>] [--post-url …]`,
   unschedule: `unschedule <contentId> --account <réf>`,
   posted: `posted <contentId> --account <réf> [--url <lien du post>] [--undo]`,
-  calendar: `calendar [--from AAAA-MM-JJ] [--to AAAA-MM-JJ] [--folder …] [--account …] [--include-posted]`,
+  calendar: `calendar [--from AAAA-MM-JJ] [--to AAAA-MM-JJ] [--folder …] [--account …] [--assignee <personne>|none] [--include-posted]`,
   "rm-file": `rm-file <assetId>`,
   "set-kind": `set-kind <assetId> <video|thumbnail|photo|other>`,
   delete: `delete <contentId> --yes`,
@@ -734,16 +738,27 @@ async function uploadFiles(contentId, files) {
 /* Affichage                                                           */
 /* ------------------------------------------------------------------ */
 
-function pubLine(p) {
+const SOURCE_FR = { content: "attribué au contenu", account: "via le compte", folder: "via le dossier" };
+
+/** « Enzo », « Enzo (via le dossier) »… ; null si personne. */
+function personLabel(a, { showSource = true } = {}) {
+  if (!a || !a.name) return null;
+  return showSource && a.source && a.source !== "content" ? `${a.name} (${SOURCE_FR[a.source] ?? a.source})` : a.name;
+}
+
+function pubLine(p, contentPerson) {
   const who = p.account?.ref ?? p.ref ?? p.account_id;
   const when = p.date ? `${p.date}${p.time ? " " + p.time : ""} (${fmtDay(p.date)})` : "non programmé";
   const flag = p.posted ? " [posté]" : p.late ? " [EN RETARD]" : "";
-  return `${who} : ${when}${flag}`;
+  // La personne n'est rappelée que si elle diffère de celle du contenu (attribution via le compte).
+  const person = p.assignee && p.assignee.id !== contentPerson?.id ? `  → ${personLabel(p.assignee)}` : "";
+  return `${who} : ${when}${flag}${person}`;
 }
 
 function printContent(c) {
   out(`${c.title}`);
   out(`  ${STATUS_FR[c.status] ?? c.status} · ${FORMAT_FR[c.format] ?? c.format} · ${c.folder_path}`);
+  out(`  pour : ${personLabel(c.effective_assignee) ?? "personne (non attribué)"}`);
   out(`  id  : ${c.id}`);
   out(`  web : ${c.url}`);
   if (c.notes) out(`  notes : ${oneLine(c.notes, 200)}`);
@@ -757,13 +772,13 @@ function printContent(c) {
   const pubs = expectArray(c.publications, "publications");
   out(`Publications (${pubs.length})`);
   for (const p of pubs) {
-    out(`  - ${pubLine(p)}`);
+    out(`  - ${pubLine(p, c.effective_assignee)}`);
     if (p.title) out(`      titre : ${oneLine(p.title, 120)}`);
     if (p.description) out(`      description : ${oneLine(p.description, 160)}`);
     if (p.post_url) out(`      lien : ${p.post_url}`);
   }
   if (Array.isArray(c.available_accounts) && c.available_accounts.length) {
-    out(`Comptes utilisables : ${c.available_accounts.map((a) => a.ref).join(", ")}`);
+    out(`Comptes utilisables : ${c.available_accounts.map((a) => (a.assignee ? `${a.ref} (${a.assignee.name})` : a.ref)).join(", ")}`);
   }
 }
 
@@ -788,10 +803,14 @@ Configuration
   me                                         Vérifie la clé, date du jour (Paris), limites
   version                                    Version du CLI
 
-Dossiers & comptes
-  folders                                    Arborescence avec les comptes
+Dossiers, comptes & personnes
+  folders                                    Arborescence avec les comptes et les personnes
   ${USAGE.mkdir}
-  ${USAGE.account}
+  ${USAGE.folder}
+  account add --folder <chemin> --platform <…> --handle <@x> [--url …] [--assignee <personne>] [--create-folders]
+  account edit <accountId> [--assignee <personne>|none] [--handle …] [--url …]
+  people                                     Personnes (Enzo, Loys…)
+  people add <nom> [--color #hex]            Ajoute une personne
 
 Contenus
   ${USAGE.list}
@@ -810,12 +829,14 @@ Calendrier
   ${USAGE.calendar}
 
 Compte (--account) : "instagram" (plateforme), "@handle", "instagram:@handle" ou l'id.
+Personne (--assignee) : nom (casse et accents ignorés) ou id ; "none" retire l'attribution. Une publication revient
+  à la personne du contenu, sinon à celle du compte, sinon à celle du dossier le plus proche.
 upload : un dossier ajoute tous ses fichiers (tri naturel) ; "fichier:thumbnail" fixe le type d'un fichier ;
          --kind s'applique aux fichiers sans type explicite (sinon : vidéo → video, image → photo).
 
 Manifest de push (chemins relatifs au manifest) :
   { "folder": "Projet/Sous-projet/Angle", "create_folders": false,
-    "title": "…", "format": "carousel", "notes": "…",
+    "title": "…", "format": "carousel", "notes": "…", "assignee": "Enzo",
     "files": [ { "path": "./cover.png", "kind": "thumbnail" } ],
     "dir": "./slides",
     "publications": [ { "account": "instagram", "date": "2026-10-20", "time": "18:00", "description": "…" },
@@ -882,34 +903,93 @@ async function cmdFolders(flags) {
   if (!folders.length) return out(`Aucun dossier. Crée-en un : ${PROG} mkdir "Projet/Sous-projet"`);
   for (const f of folders) {
     const pad = "  ".repeat(f.depth);
-    const count = f.total_contents !== f.contents_count ? `${f.contents_count} / ${f.total_contents} au total` : `${f.contents_count}`;
-    out(`${pad}${f.depth === 0 ? "■" : "└"} ${f.name}  (${count} contenu${f.total_contents > 1 ? "s" : ""})`);
+    const plural = (n) => `${n} contenu${n > 1 ? "s" : ""}`;
+    const count = f.total_contents !== f.contents_count ? `${plural(f.contents_count)}, ${f.total_contents} avec les sous-dossiers` : plural(f.contents_count);
+    const who = f.assignee ? `  · pour ${f.assignee.name}` : "";
+    out(`${pad}${f.depth === 0 ? "■" : "└"} ${f.name}  (${count})${who}`);
     const accounts = expectArray(f.accounts, "accounts");
-    if (accounts.length) out(`${pad}    comptes : ${accounts.map((a) => a.ref).join(", ")}`);
+    if (accounts.length) out(`${pad}    comptes : ${accounts.map((a) => (a.assignee ? `${a.ref} (${a.assignee.name})` : a.ref)).join(", ")}`);
   }
   out(`\nLes contenus d'un dossier peuvent utiliser les comptes du dossier et de tous ses parents.`);
+  out(`Personne : celle du contenu, sinon du compte, sinon du dossier le plus proche (sous-dossiers compris).`);
 }
 
 async function cmdMkdir(pos, flags) {
-  const res = await api("POST", "/folders", { path: pos[0], color: str(flags.color, "color"), description: str(flags.description, "description") });
+  const res = await api("POST", "/folders", {
+    path: pos[0],
+    color: str(flags.color, "color"),
+    description: str(flags.description, "description"),
+    assignee: str(flags.assignee, "assignee"),
+  });
   if (flags.json) return printJson(res);
   const created = expectArray(res.created, "created");
   if (created.length) out(`Créé : ${created.join(", ")}`);
   else out(`Existe déjà : ${res.folder.path}`);
+  if (res.folder.assignee) out(`pour : ${res.folder.assignee.name}`);
   out(`id : ${res.folder.id}`);
 }
 
+async function cmdFolder(pos, flags) {
+  if (pos[0] !== "edit") throw new CliError(`Sous-commande inconnue : « ${pos[0]} ».\n${usage("folder")}`, { code: 2 });
+  const body = {};
+  if (flags.assignee !== undefined) body.assignee = need(flags.assignee, "assignee", "folder");
+  if (flags.name !== undefined) body.name = need(flags.name, "name", "folder");
+  if (flags.color !== undefined) body.color = need(flags.color, "color", "folder");
+  if (flags.description !== undefined) body.description = str(flags.description, "description");
+  if (!Object.keys(body).length) throw new CliError(`Rien à modifier : donne --assignee, --name, --color ou --description.\n${usage("folder")}`, { code: 2 });
+  // Le chemin tient dans un seul segment d'URL (l'API accepte un id ou un chemin encodé).
+  const res = await api("PATCH", `/folders/${encodeURIComponent(pos[1])}`, body);
+  if (flags.json) return printJson(res);
+  const f = expectObject(res.folder, "folder");
+  const inherited = f.effective_assignee ? `${f.effective_assignee.name} (hérité d'un dossier parent)` : "personne";
+  out(`Dossier modifié : ${f.path}`);
+  out(`  pour : ${f.assignee ? f.assignee.name : inherited}`);
+}
+
+async function cmdPeople(pos, flags) {
+  if (!pos.length) {
+    const res = await api("GET", "/people");
+    const people = expectArray(res.people, "people");
+    if (flags.json) return printJson(res);
+    if (!people.length) return out(`Aucune personne. Ajoute-en une : ${PROG} people add "Prénom"`);
+    for (const p of people) out(`- ${p.name}  (${p.color})  id ${p.id}`);
+    return;
+  }
+  if (pos[0] !== "add" || !pos[1]) throw new CliError(`${usage("people")}`, { code: 2 });
+  const res = await api("POST", "/people", { name: pos[1], color: str(flags.color, "color") });
+  if (flags.json) return printJson(res);
+  out(`Personne ajoutée : ${res.person.name}  (id ${res.person.id})`);
+}
+
 async function cmdAccount(pos, flags) {
+  if (pos[0] === "edit") {
+    if (!pos[1]) throw new CliError(`Argument manquant : id du compte.\n${usage("account")}`, { code: 2 });
+    for (const k of ["folder", "platform", "create-folders"]) {
+      if (flags[k] !== undefined) throw new CliError(`--${k} ne s'utilise pas avec « account edit ».\n${usage("account")}`, { code: 2 });
+    }
+    const body = {};
+    if (flags.assignee !== undefined) body.assignee = need(flags.assignee, "assignee", "account");
+    if (flags.handle !== undefined) body.handle = need(flags.handle, "handle", "account");
+    if (flags.url !== undefined) body.url = str(flags.url, "url");
+    if (!Object.keys(body).length) throw new CliError(`Rien à modifier : donne --assignee, --handle ou --url.\n${usage("account")}`, { code: 2 });
+    const res = await api("PATCH", `/accounts/${encodeURIComponent(pos[1])}`, body);
+    if (flags.json) return printJson(res);
+    const a = expectObject(res.account, "account");
+    return out(`Compte modifié : ${a.ref} dans ${a.folder_path} · pour : ${a.assignee ? a.assignee.name : "personne"}`);
+  }
   if (pos[0] !== "add") throw new CliError(`Sous-commande inconnue : « ${pos[0]} ».\n${usage("account")}`, { code: 2 });
+  if (pos.length > 1) throw new CliError(`Argument en trop : « ${pos[1]} ».\n${usage("account")}`, { code: 2 });
   const res = await api("POST", "/accounts", {
     folder: need(flags.folder, "folder", "account"),
     platform: need(flags.platform, "platform", "account"),
     handle: need(flags.handle, "handle", "account"),
     url: str(flags.url, "url"),
+    assignee: str(flags.assignee, "assignee"),
     create_folders: flags["create-folders"] ? true : undefined,
   });
   if (flags.json) return printJson(res);
-  out(`Compte ajouté : ${res.account.ref} dans ${res.account.folder_path}  (id ${res.account.id})`);
+  const who = res.account.assignee ? ` · pour ${res.account.assignee.name}` : "";
+  out(`Compte ajouté : ${res.account.ref} dans ${res.account.folder_path}${who}  (id ${res.account.id})`);
 }
 
 async function cmdList(flags) {
@@ -918,6 +998,7 @@ async function cmdList(flags) {
     status: str(flags.status, "status"),
     format: str(flags.format, "format"),
     q: str(flags.q, "q"),
+    assignee: str(flags.assignee, "assignee"),
     limit: str(flags.limit, "limit"),
   });
   const contents = expectArray(res.contents, "contents");
@@ -925,8 +1006,9 @@ async function cmdList(flags) {
   if (!contents.length) return out("Aucun contenu.");
   for (const c of contents) {
     const files = c.files?.total ? `${c.files.total} fichier${c.files.total > 1 ? "s" : ""}` : "aucun fichier";
-    out(`[${STATUS_FR[c.status] ?? c.status}] ${c.title}  ·  ${FORMAT_FR[c.format] ?? c.format}  ·  ${c.folder_path}  ·  ${files}`);
-    for (const p of expectArray(c.publications, "publications")) out(`    ${pubLine(p)}`);
+    const who = personLabel(c.effective_assignee);
+    out(`[${STATUS_FR[c.status] ?? c.status}] ${c.title}  ·  ${FORMAT_FR[c.format] ?? c.format}  ·  ${c.folder_path}  ·  ${files}${who ? `  ·  pour ${who}` : ""}`);
+    for (const p of expectArray(c.publications, "publications")) out(`    ${pubLine(p, c.effective_assignee)}`);
     out(`    id ${c.id}  ${c.url}`);
   }
   out(`\n${contents.length} affiché(s) sur ${res.total}.`);
@@ -938,7 +1020,7 @@ async function cmdGet(pos, flags) {
   printContent(c);
 }
 
-const MANIFEST_KEYS = new Set(["folder", "create_folders", "title", "format", "notes", "notes_file", "files", "dir", "publications"]);
+const MANIFEST_KEYS = new Set(["folder", "create_folders", "title", "format", "notes", "notes_file", "assignee", "files", "dir", "publications"]);
 const PUB_KEYS = new Set(["account", "date", "time", "title", "title_file", "description", "description_file", "posted", "post_url"]);
 
 /** Lit et valide le manifest, rassemble les fichiers ; aucune écriture côté app. */
@@ -962,6 +1044,9 @@ async function loadManifest(manifestArg) {
     throw new CliError("« dir » doit être un chemin de dossier (ou une liste de chemins).");
   }
   if (m.create_folders !== undefined && typeof m.create_folders !== "boolean") throw new CliError("« create_folders » doit valoir true ou false.");
+  if (m.assignee !== undefined && m.assignee !== null && (typeof m.assignee !== "string" || !m.assignee.trim())) {
+    throw new CliError("« assignee » doit être le nom (ou l'id) d'une personne existante, ou \"none\".");
+  }
 
   const list = [];
   const seen = new Set();
@@ -1020,14 +1105,14 @@ async function cmdPush(pos, flags) {
   const { abs, manifest: m, files: list, publications, notes } = await loadManifest(pos[0]);
   const { maxBytes } = await limits();
   const files = await statFiles(list, maxBytes);
-  const payload = { folder: m.folder, create_folders: m.create_folders === true, title: m.title, format: m.format, notes };
+  const payload = { folder: m.folder, create_folders: m.create_folders === true, title: m.title, format: m.format, notes, assignee: m.assignee };
 
   // 1. Tout valider côté app sans rien écrire (dossier, comptes, dates).
   const check = await api("POST", "/contents", { ...payload, publications: publications.map((p) => p.pub), dry_run: true });
   // Avertissements uniques : ceux de la validation sont affichés une fois, les nouveaux au fil de l'eau.
   const warnings = new Set(Array.isArray(check.warnings) ? check.warnings : []);
   if (!flags.json) {
-    err(`Manifest ${shown(abs)} validé : « ${m.title} » → ${check.folder_path}`);
+    err(`Manifest ${shown(abs)} validé : « ${m.title} » → ${check.folder_path}${check.assignee ? ` · pour ${check.assignee.name}` : ""}`);
     if (check.missing_folders?.length) err(`  dossiers à créer : ${check.missing_folders.join(" / ")}`);
     err(`  ${files.length} fichier(s), ${fmtSize(files.reduce((n, f) => n + f.size, 0))} · ${publications.length} publication(s)`);
     printWarnings(check.warnings);
@@ -1170,12 +1255,13 @@ async function cmdEdit(pos, flags) {
   else if (flags.notes !== undefined) body.notes = str(flags.notes, "notes");
   if (flags.folder !== undefined) body.folder = need(flags.folder, "folder", "edit");
   if (flags["create-folders"]) body.create_folders = true;
+  if (flags.assignee !== undefined) body.assignee = need(flags.assignee, "assignee", "edit");
   if (!Object.keys(body).filter((k) => k !== "create_folders").length) {
-    throw new CliError(`Rien à modifier : donne au moins --title, --format, --notes ou --folder.\n${usage("edit")}`, { code: 2 });
+    throw new CliError(`Rien à modifier : donne au moins --title, --format, --notes, --folder ou --assignee.\n${usage("edit")}`, { code: 2 });
   }
   const c = await api("PATCH", `/contents/${encodeURIComponent(pos[0])}`, body);
   if (flags.json) return printJson(c);
-  out(`Modifié : « ${c.title} » · ${FORMAT_FR[c.format] ?? c.format} · ${c.folder_path}`);
+  out(`Modifié : « ${c.title} » · ${FORMAT_FR[c.format] ?? c.format} · ${c.folder_path} · pour : ${personLabel(c.effective_assignee) ?? "personne"}`);
   if (c.created_folders?.length) out(`  dossiers créés : ${c.created_folders.join(", ")}`);
   printWarnings(c.warnings);
   out(`Lien : ${c.url}`);
@@ -1235,14 +1321,17 @@ async function cmdCalendar(flags) {
     to: str(flags.to, "to"),
     folder: str(flags.folder, "folder"),
     account: str(flags.account, "account"),
+    assignee: str(flags.assignee, "assignee"),
     include_posted: flags["include-posted"] ? "true" : undefined,
   });
   const pubs = expectArray(res.publications, "publications");
   const overdue = expectArray(res.overdue, "overdue");
   if (flags.json) return printJson(res);
   const line = (p) =>
-    `    ${p.time ?? "--:--"}  ${p.account?.ref ?? "?"}  ${p.content?.title}${p.posted ? "  [posté]" : p.late ? "  [EN RETARD]" : ""}  ·  ${p.folder_path}\n` +
+    `    ${p.time ?? "--:--"}  ${p.account?.ref ?? "?"}  ${p.content?.title}${p.posted ? "  [posté]" : p.late ? "  [EN RETARD]" : ""}` +
+    `  ·  ${p.assignee ? p.assignee.name : "personne"}  ·  ${p.folder_path}\n` +
     `           id ${p.content?.id}  ${p.content?.url}`;
+  if (res.assignee) out(`Planning de ${res.assignee === "none" ? "personne (publications non attribuées)" : res.assignee.name}`);
   if (overdue.length) {
     out(`EN RETARD, pas encore posté (${overdue.length})`);
     let day = null;
@@ -1312,6 +1401,8 @@ const HANDLERS = {
   "rm-file": cmdRmFile,
   "set-kind": cmdSetKind,
   delete: cmdDelete,
+  people: cmdPeople,
+  folder: cmdFolder,
 };
 
 async function main() {

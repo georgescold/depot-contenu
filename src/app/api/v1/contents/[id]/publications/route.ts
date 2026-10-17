@@ -14,18 +14,20 @@ import {
   type AccountCandidate,
   type FolderCtx,
 } from "@/lib/api/resolve";
-import { appOrigin, contentUrl, getContentRow, publicationWarnings, serializePublication } from "@/lib/api/serialize";
+import { loadPeople, peopleMap } from "@/lib/api/people";
+import { appOrigin, contentUrl, getContentRow, pubAssignee, publicationWarnings, serializePublication } from "@/lib/api/serialize";
 import { requireUuid, todayParis } from "@/lib/api/validate";
 
 type Ctx = RouteContext<"/api/v1/contents/[id]/publications">;
 
 /** Contexte commun : contenu, publications existantes et comptes utilisables. */
 async function loadPubContext(sb: SupabaseClient, id: string) {
-  const [content, pubsRes, folders, accounts] = await Promise.all([
+  const [content, pubsRes, folders, accounts, people] = await Promise.all([
     getContentRow(sb, id),
     sb.from("publications").select("*").eq("content_id", id),
     loadFolderCtx(sb),
     loadAccounts(sb),
+    loadPeople(sb).then(peopleMap),
   ]);
   if (pubsRes.error) throw dbFail(pubsRes.error, "lecture des publications");
   const pubs = (pubsRes.data ?? []) as Publication[];
@@ -39,7 +41,7 @@ async function loadPubContext(sb: SupabaseClient, id: string) {
       known.add(a.id);
     }
   }
-  return { content, pubs, folders, candidates };
+  return { content, pubs, folders, candidates, people };
 }
 
 function contentSummary(content: Content, pubs: Publication[], origin: string) {
@@ -63,7 +65,7 @@ export async function PUT(req: NextRequest, ctx: Ctx) {
     const id = requireUuid((await ctx.params).id, "id du contenu");
     const input = parsePubInput(await readObject(req));
     const sb = getAdminClient();
-    const { content, pubs, folders, candidates } = await loadPubContext(sb, id);
+    const { content, pubs, folders, candidates, people } = await loadPubContext(sb, id);
     const account: Account = resolveAccountRef(folders, candidates, input.account, scopeOf(folders, content));
 
     let existing = pubs.find((p) => p.account_id === account.id);
@@ -118,7 +120,7 @@ export async function PUT(req: NextRequest, ctx: Ctx) {
     }
     return json(
       {
-        publication: serializePublication(row, account),
+        publication: serializePublication(row, account, todayParis(), pubAssignee(folders, people, content, account)),
         created,
         content: contentSummary(content, all, appOrigin(req)),
         warnings,

@@ -16,20 +16,22 @@ import {
   resolveFolder,
   type FolderCtx,
 } from "@/lib/api/resolve";
-import { appOrigin, comparePubs, contentUrl, hhmm, loadContentFull, publicationWarnings } from "@/lib/api/serialize";
+import { contentMatchesAssignee } from "@/lib/assignee";
+import { loadPeople, peopleMap, personJson, resolvePerson, resolvePersonFilter, type PeopleMap } from "@/lib/api/people";
+import { appOrigin, comparePubs, contentUrl, hhmm, loadContentFull, pubAssignee, publicationWarnings } from "@/lib/api/serialize";
 import { optBool, optFormat, optText, parseFormat, reqText, todayParis } from "@/lib/api/validate";
 
 const STATUSES: ContentStatus[] = ["draft", "scheduled", "late", "partial", "posted"];
 
-type Row = Pick<Content, "id" | "folder_id" | "title" | "format" | "notes" | "created_at" | "updated_at"> & {
+type Row = Pick<Content, "id" | "folder_id" | "title" | "format" | "notes" | "assignee_id" | "created_at" | "updated_at"> & {
   assets: { kind: AssetKind }[] | null;
   publications: Pick<Publication, "id" | "account_id" | "scheduled_date" | "scheduled_time" | "posted">[] | null;
 };
 
 const LIST_SELECT =
-  "id, folder_id, title, format, notes, created_at, updated_at, assets(kind), publications(id, account_id, scheduled_date, scheduled_time, posted)";
+  "id, folder_id, title, format, notes, assignee_id, created_at, updated_at, assets(kind), publications(id, account_id, scheduled_date, scheduled_time, posted)";
 
-function summarize(r: Row, ctx: FolderCtx, accounts: Map<string, Account>, origin: string, today: string) {
+function summarize(r: Row, ctx: FolderCtx, accounts: Map<string, Account>, people: PeopleMap, origin: string, today: string) {
   const pubs = r.publications ?? [];
   const files = Object.fromEntries(ASSET_KIND_LIST.map((k) => [k, 0])) as Record<AssetKind, number>;
   for (const a of r.assets ?? []) files[a.kind] = (files[a.kind] ?? 0) + 1;
@@ -40,6 +42,8 @@ function summarize(r: Row, ctx: FolderCtx, accounts: Map<string, Account>, origi
     folder_id: r.folder_id,
     folder_path: ctx.path(r.folder_id),
     status: contentStatus(pubs, today),
+    assignee: personJson(people, r.assignee_id),
+    effective_assignee: pubAssignee(ctx, people, r, null),
     files: { ...files, total: (r.assets ?? []).length },
     publications: pubs
       .map((p) => {
@@ -54,6 +58,7 @@ function summarize(r: Row, ctx: FolderCtx, accounts: Map<string, Account>, origi
           time: hhmm(p.scheduled_time),
           posted: p.posted,
           late: isLate(p, today),
+          assignee: pubAssignee(ctx, people, r, a),
         };
       })
       .sort((a, b) => comparePubs({ ...a, platform: a.platform ?? "" }, { ...b, platform: b.platform ?? "" })),
@@ -63,7 +68,7 @@ function summarize(r: Row, ctx: FolderCtx, accounts: Map<string, Account>, origi
   };
 }
 
-/** GET /api/v1/contents?folder=&status=&format=&q=&limit= */
+/** GET /api/v1/contents?folder=&status=&format=&q=&assignee=&limit= */
 export async function GET(req: NextRequest) {
   return handle(req, async () => {
     const sp = req.nextUrl.searchParams;
@@ -80,7 +85,11 @@ export async function GET(req: NextRequest) {
     }
 
     const sb = getAdminClient();
-    const [ctx, accountList] = await Promise.all([loadFolderCtx(sb), loadAccounts(sb)]);
+    const [ctx, accountList, peopleList] = await Promise.all([loadFolderCtx(sb), loadAccounts(sb), loadPeople(sb)]);
+    const people = peopleMap(peopleList);
+    // Personne : id, nom ou « none » (contenus attribués à personne).
+    const assigneeRef = sp.get("assignee")?.trim();
+    const assigneeFilter = assigneeRef ? resolvePersonFilter(peopleList, assigneeRef) : undefined;
     let folderIds: string[] | undefined;
     const folderRef = sp.get("folder")?.trim();
     if (folderRef) {
@@ -101,9 +110,15 @@ export async function GET(req: NextRequest) {
     const accounts = new Map(accountList.map((a) => [a.id, a]));
     let rows: Row[];
     let total: number;
-    if (status) {
+    if (status || assigneeFilter) {
+      // Filtres calculés (statut, personne effective) : on lit tout puis on filtre.
       const all = await fetchAll<Row>((from, to) => build(false).range(from, to) as never, "liste des contenus");
-      const filtered = all.filter((r) => contentStatus(r.publications ?? [], today) === status);
+      const filtered = all.filter(
+        (r) =>
+          (!status || contentStatus(r.publications ?? [], today) === status) &&
+          (!assigneeFilter ||
+            contentMatchesAssignee(ctx.index, { ...r, publications: r.publications ?? [] }, accounts, assigneeFilter)),
+      );
       total = filtered.length;
       rows = filtered.slice(0, limit);
     } else {
@@ -114,7 +129,7 @@ export async function GET(req: NextRequest) {
     }
 
     return json({
-      contents: rows.map((r) => summarize(r, ctx, accounts, origin, today)),
+      contents: rows.map((r) => summarize(r, ctx, accounts, people, origin, today)),
       total,
       limit,
     });
@@ -152,7 +167,8 @@ function resolvePublications(ctx: FolderCtx, accounts: Account[], folderId: stri
 
 /**
  * POST /api/v1/contents { folder, create_folders?, title, format?, notes?, publications?, dry_run? }
- * Avec dry_run: true, tout est validé (dossier, comptes, dates) mais rien n'est écrit.
+ * `assignee` : nom ou id d'une personne existante (« none » = personne).
+ * Avec dry_run: true, tout est validé (dossier, comptes, personne, dates) mais rien n'est écrit.
  */
 export async function POST(req: NextRequest) {
   return handle(req, async () => {
@@ -166,7 +182,10 @@ export async function POST(req: NextRequest) {
     const create = optBool(body, "create_folders");
 
     const sb = getAdminClient();
-    const [ctx, accounts] = await Promise.all([loadFolderCtx(sb), loadAccounts(sb)]);
+    const [ctx, accounts, peopleList] = await Promise.all([loadFolderCtx(sb), loadAccounts(sb), loadPeople(sb)]);
+    const people = peopleMap(peopleList);
+    // Personne inconnue → 404 avant toute écriture (jamais de création implicite).
+    const assigneeId = resolvePerson(peopleList, body.assignee) ?? null;
 
     if (optBool(body, "dry_run")) {
       const preview = previewFolder(ctx, body.folder, { create });
@@ -176,6 +195,7 @@ export async function POST(req: NextRequest) {
         dry_run: true,
         title,
         format,
+        assignee: personJson(people, assigneeId),
         folder_id: preview.missing.length ? null : preview.existing!.id,
         folder_path: preview.path,
         missing_folders: preview.missing,
@@ -200,7 +220,7 @@ export async function POST(req: NextRequest) {
 
       const { data, error } = await sb
         .from("contents")
-        .insert({ folder_id: folder.id, title, format, notes })
+        .insert({ folder_id: folder.id, title, format, notes, assignee_id: assigneeId })
         .select("*")
         .single();
       if (error) throw dbFail(error, "création du contenu");
@@ -219,7 +239,7 @@ export async function POST(req: NextRequest) {
       throw err;
     }
 
-    const full = await loadContentFull(sb, content.id, appOrigin(req), { ctx, accounts, content });
+    const full = await loadContentFull(sb, content.id, appOrigin(req), { ctx, accounts, content, people });
     return json({ ...full, created_folders: created.map((f) => ctx.path(f.id)), warnings }, 201);
   });
 }

@@ -5,13 +5,14 @@ import { authedFetch } from "@/lib/client-fetch";
 import { buildFolderIndex, type FolderIndex } from "@/lib/folders";
 import { forgetSignedUrl } from "@/lib/signed-urls";
 import { supabase } from "@/lib/supabase/browser";
-import type { Account, Asset, Content, ContentFull, Folder, Publication } from "@/lib/types";
+import type { Account, Asset, Content, ContentFull, Folder, Person, Publication } from "@/lib/types";
 import { useToast } from "../Toast";
 
 interface Data {
   folders: Folder[];
   accounts: Account[];
   contents: ContentFull[];
+  people: Person[];
 }
 
 type PubPatch = Partial<
@@ -27,15 +28,19 @@ export interface Store extends Data {
   index: FolderIndex;
   contentById: Map<string, ContentFull>;
   accountById: Map<string, Account>;
+  personById: Map<string, Person>;
   reload: () => Promise<void>;
-  createFolder: (input: { name: string; parent_id: string | null; color?: string; description?: string }) => Promise<Folder | null>;
-  updateFolder: (id: string, patch: Partial<Pick<Folder, "name" | "color" | "description" | "parent_id" | "position">>) => Promise<boolean>;
+  createPerson: (input: { name: string; color: string }) => Promise<Person | null>;
+  updatePerson: (id: string, patch: Partial<Pick<Person, "name" | "color" | "position">>) => Promise<boolean>;
+  deletePerson: (id: string) => Promise<boolean>;
+  createFolder: (input: { name: string; parent_id: string | null; color?: string; description?: string; assignee_id?: string | null }) => Promise<Folder | null>;
+  updateFolder: (id: string, patch: Partial<Pick<Folder, "name" | "color" | "description" | "parent_id" | "position" | "assignee_id">>) => Promise<boolean>;
   deleteFolder: (id: string) => Promise<boolean>;
-  createAccount: (input: Pick<Account, "folder_id" | "platform" | "handle" | "url">) => Promise<Account | null>;
-  updateAccount: (id: string, patch: Partial<Pick<Account, "platform" | "handle" | "url" | "folder_id">>) => Promise<boolean>;
+  createAccount: (input: Pick<Account, "folder_id" | "platform" | "handle" | "url"> & { assignee_id?: string | null }) => Promise<Account | null>;
+  updateAccount: (id: string, patch: Partial<Pick<Account, "platform" | "handle" | "url" | "folder_id" | "assignee_id">>) => Promise<boolean>;
   deleteAccount: (id: string) => Promise<boolean>;
-  createContent: (input: Pick<Content, "folder_id" | "title" | "format">) => Promise<ContentFull | null>;
-  updateContent: (id: string, patch: Partial<Pick<Content, "title" | "format" | "notes" | "folder_id" | "keep_files">>) => Promise<boolean>;
+  createContent: (input: Pick<Content, "folder_id" | "title" | "format"> & { assignee_id?: string | null }) => Promise<ContentFull | null>;
+  updateContent: (id: string, patch: Partial<Pick<Content, "title" | "format" | "notes" | "folder_id" | "keep_files" | "assignee_id">>) => Promise<boolean>;
   /** retire tout de suite du stockage les fichiers d'un contenu posté partout */
   archiveNow: (contentId: string) => Promise<boolean>;
   /** délai (jours) avant l'archivage automatique ; null = jamais ; undefined = pas encore chargé */
@@ -127,7 +132,7 @@ async function fetchAllContents(): Promise<ContentFull[]> {
 
 export function DataProvider({ children }: { children: ReactNode }) {
   const toast = useToast();
-  const [data, setData] = useState<Data>({ folders: [], accounts: [], contents: [] });
+  const [data, setData] = useState<Data>({ folders: [], accounts: [], contents: [], people: [] });
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [online, setOnline] = useState(true);
@@ -148,20 +153,22 @@ export function DataProvider({ children }: { children: ReactNode }) {
     const startedAt = Date.now();
     try {
       const sb = supabase();
-      const [f, a, contents] = await Promise.all([
+      const [f, a, contents, pe] = await Promise.all([
         sb.from("folders").select("*").order("id"),
         sb.from("accounts").select("*").order("id"),
         fetchAllContents(),
+        sb.from("people").select("*").order("position").order("name"),
       ]);
       if (f.error) throw f.error;
       if (a.error) throw a.error;
+      if (pe.error) throw pe.error;
       if (writes.pending > 0 || writes.last >= startedAt) {
         // une modification a eu lieu pendant le chargement : instantané peut-être périmé, on recommence
         if (writes.retry) clearTimeout(writes.retry);
         writes.retry = setTimeout(() => window.dispatchEvent(new Event(RELOAD_EVENT)), 1500);
         return;
       }
-      setData({ folders: f.data as Folder[], accounts: a.data as Account[], contents });
+      setData({ folders: f.data as Folder[], accounts: a.data as Account[], contents, people: pe.data as Person[] });
       setError(null);
       setReady(true);
     } catch (e) {
@@ -204,11 +211,67 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const index = useMemo(() => buildFolderIndex(data.folders), [data.folders]);
   const contentById = useMemo(() => new Map(data.contents.map((c) => [c.id, c])), [data.contents]);
   const accountById = useMemo(() => new Map(data.accounts.map((a) => [a.id, a])), [data.accounts]);
+  const personById = useMemo(() => new Map(data.people.map((p) => [p.id, p])), [data.people]);
 
   /* ---------------- mises à jour locales ---------------- */
   const patchContentLocal = useCallback((id: string, fn: (c: ContentFull) => ContentFull) => {
     setData((d) => ({ ...d, contents: d.contents.map((c) => (c.id === id ? fn(c) : c)) }));
   }, []);
+
+  /* ---------------- personnes ---------------- */
+  const createPerson: Store["createPerson"] = useCallback(
+    async (input) => {
+      const name = input.name.trim();
+      const { data: row, error } = await supabase()
+        .from("people")
+        .insert({ name, color: input.color, position: data.people.length })
+        .select()
+        .single();
+      if (error) {
+        fail(error.code === "23505" ? { message: "Cette personne existe déjà" } : error, "Personne non ajoutée");
+        return null;
+      }
+      setData((d) => ({ ...d, people: [...d.people, row as Person] }));
+      return row as Person;
+    },
+    [data.people, fail],
+  );
+
+  const updatePerson: Store["updatePerson"] = useCallback(
+    async (id, patch) => {
+      const before = data.people.find((p) => p.id === id);
+      setData((d) => ({ ...d, people: d.people.map((p) => (p.id === id ? { ...p, ...patch } : p)) }));
+      const { error } = await supabase().from("people").update(patch).eq("id", id);
+      if (error) {
+        fail(error.code === "23505" ? { message: "Ce nom est déjà pris" } : error, "Personne non modifiée");
+        if (before) setData((d) => ({ ...d, people: d.people.map((p) => (p.id === id ? before : p)) }));
+        return false;
+      }
+      return true;
+    },
+    [data.people, fail],
+  );
+
+  const deletePerson: Store["deletePerson"] = useCallback(
+    async (id) => {
+      const { error } = await supabase().from("people").delete().eq("id", id);
+      if (error) {
+        fail(error, "Suppression impossible");
+        return false;
+      }
+      // la base remet les attributions à vide (on delete set null) : même chose en local
+      const clear = <T extends { assignee_id: string | null }>(x: T): T => (x.assignee_id === id ? { ...x, assignee_id: null } : x);
+      setData((d) => ({
+        ...d,
+        people: d.people.filter((p) => p.id !== id),
+        folders: d.folders.map(clear),
+        accounts: d.accounts.map(clear),
+        contents: d.contents.map(clear),
+      }));
+      return true;
+    },
+    [fail],
+  );
 
   /* ---------------- dossiers ---------------- */
   const createFolder: Store["createFolder"] = useCallback(
@@ -577,6 +640,9 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
   const actions = useMemo(
     () => ({
+      createPerson: tracked(createPerson),
+      updatePerson: tracked(updatePerson),
+      deletePerson: tracked(deletePerson),
       createFolder: tracked(createFolder),
       updateFolder: tracked(updateFolder),
       deleteFolder: tracked(deleteFolder),
@@ -595,6 +661,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       setArchiveAfterDays,
     }),
     [
+      createPerson, updatePerson, deletePerson,
       createFolder, updateFolder, deleteFolder, createAccount, updateAccount, deleteAccount, createContent,
       updateContent, deleteContent, savePublication, deletePublication, addAsset, deleteAsset, reorderAssets,
       archiveNow, setArchiveAfterDays,
@@ -610,6 +677,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     index,
     contentById,
     accountById,
+    personById,
     reload,
     ...actions,
   };

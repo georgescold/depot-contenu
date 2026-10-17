@@ -4,18 +4,25 @@ import type { Account, Content, Publication } from "@/lib/types";
 import { getAdminClient } from "@/lib/supabase/admin";
 import { ApiError, fetchAll, handle, json } from "@/lib/api/http";
 import { accountLabel, loadAccounts, loadFolderCtx, resolveAccountRef, resolveFolder, type FolderCtx } from "@/lib/api/resolve";
-import { appOrigin, comparePubs, contentUrl, hhmm } from "@/lib/api/serialize";
+import { UNASSIGNED } from "@/lib/assignee";
+import { loadPeople, peopleMap, personJson, resolvePersonFilter, type PeopleMap } from "@/lib/api/people";
+import { appOrigin, comparePubs, contentUrl, hhmm, pubAssignee } from "@/lib/api/serialize";
 import { addDays, parseBool, parseDate, parsePlatform, todayParis } from "@/lib/api/validate";
 
 type PubRow = Pick<
   Publication,
   "id" | "content_id" | "account_id" | "scheduled_date" | "scheduled_time" | "title" | "description" | "posted" | "posted_at" | "post_url"
-> & { contents: Pick<Content, "id" | "title" | "format" | "folder_id"> | null };
+> & { contents: Pick<Content, "id" | "title" | "format" | "folder_id" | "assignee_id"> | null };
 
 const SELECT =
-  "id, content_id, account_id, scheduled_date, scheduled_time, title, description, posted, posted_at, post_url, contents(id, title, format, folder_id)";
+  "id, content_id, account_id, scheduled_date, scheduled_time, title, description, posted, posted_at, post_url, contents(id, title, format, folder_id, assignee_id)";
 
-function item(p: PubRow, accounts: Map<string, Account>, ctx: FolderCtx, origin: string, today: string) {
+/** Personne effective d'une publication du calendrier (contenu → compte → dossier). */
+function assigneeOf(p: PubRow, accounts: Map<string, Account>, ctx: FolderCtx, people: PeopleMap) {
+  return p.contents ? pubAssignee(ctx, people, p.contents, accounts.get(p.account_id)) : null;
+}
+
+function item(p: PubRow, accounts: Map<string, Account>, ctx: FolderCtx, people: PeopleMap, origin: string, today: string) {
   const a = accounts.get(p.account_id);
   const c = p.contents;
   return {
@@ -36,10 +43,11 @@ function item(p: PubRow, accounts: Map<string, Account>, ctx: FolderCtx, origin:
       : { id: p.content_id, title: null, format: null, url: contentUrl(origin, p.content_id) },
     folder_id: c?.folder_id ?? null,
     folder_path: c ? ctx.path(c.folder_id) : "",
+    assignee: assigneeOf(p, accounts, ctx, people),
   };
 }
 
-/** GET /api/v1/calendar?from=&to=&folder=&account=&include_posted= */
+/** GET /api/v1/calendar?from=&to=&folder=&account=&assignee=&include_posted= */
 export async function GET(req: NextRequest) {
   return handle(req, async () => {
     const sp = req.nextUrl.searchParams;
@@ -52,8 +60,17 @@ export async function GET(req: NextRequest) {
     if (includePosted === undefined) throw new ApiError(400, "« include_posted » doit valoir true ou false.");
 
     const sb = getAdminClient();
-    const [ctx, accountList] = await Promise.all([loadFolderCtx(sb), loadAccounts(sb)]);
+    const [ctx, accountList, peopleList] = await Promise.all([loadFolderCtx(sb), loadAccounts(sb), loadPeople(sb)]);
     const accounts = new Map(accountList.map((a) => [a.id, a]));
+    const people = peopleMap(peopleList);
+    // Personne : id, nom ou « none » (publications attribuées à personne), d'après la personne effective.
+    const assigneeRef = sp.get("assignee")?.trim();
+    const assigneeFilter = assigneeRef ? resolvePersonFilter(peopleList, assigneeRef) : undefined;
+    const keepAssignee = (p: PubRow) => {
+      if (!assigneeFilter) return true;
+      const who = assigneeOf(p, accounts, ctx, people)?.id ?? null;
+      return assigneeFilter === UNASSIGNED ? who === null : who === assigneeFilter;
+    };
 
     // Filtre dossier : le dossier et tous ses sous-dossiers.
     let folderIds: Set<string> | undefined;
@@ -104,7 +121,8 @@ export async function GET(req: NextRequest) {
     const shape = (rows: PubRow[]) =>
       rows
         .filter((p) => !folderIds || (p.contents !== null && folderIds.has(p.contents.folder_id)))
-        .map((p) => item(p, accounts, ctx, origin, today))
+        .filter(keepAssignee)
+        .map((p) => item(p, accounts, ctx, people, origin, today))
         .sort((a, b) => comparePubs({ ...a, platform: a.account.platform ?? "" }, { ...b, platform: b.account.platform ?? "" }));
 
     return json({
@@ -112,6 +130,7 @@ export async function GET(req: NextRequest) {
       to,
       today,
       include_posted: includePosted,
+      assignee: assigneeFilter ? (assigneeFilter === UNASSIGNED ? UNASSIGNED : personJson(people, assigneeFilter)) : null,
       publications: shape(inRange),
       overdue: shape(overdueRows),
     });

@@ -10,8 +10,10 @@ import { ContentCard } from "@/components/ContentCard";
 import { useData } from "@/components/data/DataProvider";
 import { FolderFormModal } from "@/components/FolderFormModal";
 import { useFolderCounts } from "@/components/FolderTreeNav";
+import { PersonBadge } from "@/components/people";
 import { Button, Card, Chip, EmptyState, IconButton, PlatformBadge, SectionTitle } from "@/components/ui";
 import { PLATFORMS } from "@/lib/constants";
+import { effectiveAssignee } from "@/lib/assignee";
 import { accountsForFolder, ancestorsOf, childrenOf, descendantIds } from "@/lib/folders";
 import { useLocalState } from "@/lib/use-local-state";
 import type { Account } from "@/lib/types";
@@ -19,7 +21,7 @@ import type { Account } from "@/lib/types";
 export default function FolderPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
-  const { index, accounts, contents, ready, deleteFolder } = useData();
+  const { index, accounts, contents, personById, ready, deleteFolder } = useData();
   const { openNewContent } = useShell();
   const counts = useFolderCounts();
   const [includeSubs, setIncludeSubs] = useLocalState("folder.includeSubs", true);
@@ -98,6 +100,18 @@ export default function FolderPage() {
 
       <PageBody className="space-y-8">
         {folder.description && <p className="-mt-2 max-w-2xl text-sm whitespace-pre-line text-muted">{folder.description}</p>}
+        {(() => {
+          const eff = effectiveAssignee(index, { folder_id: folder.id, assignee_id: null });
+          const person = eff ? personById.get(eff.personId) : undefined;
+          if (!person) return null;
+          const fromOther = eff?.folderId && eff.folderId !== folder.id ? index.byId.get(eff.folderId)?.name : null;
+          return (
+            <p className="-mt-4 flex items-center gap-2 text-sm text-muted">
+              Responsable : <PersonBadge person={person} withName />
+              {fromOther && <span className="text-xs">(hérité de {fromOther})</span>}
+            </p>
+          );
+        })()}
 
         {/* Comptes */}
         <section>
@@ -125,6 +139,7 @@ export default function FolderPage() {
                   >
                     <PlatformBadge platform={a.platform} />
                     <span className="font-medium">{a.handle || PLATFORMS[a.platform].label}</span>
+                    {a.assignee_id && <PersonBadge person={personById.get(a.assignee_id)} size="xs" />}
                     {!own && <span className="text-xs text-muted">· {from?.name}</span>}
                   </button>
                 );

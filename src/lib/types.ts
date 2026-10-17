@@ -14,6 +14,14 @@ export type Format = "video" | "short" | "carousel" | "photo" | "story" | "other
 
 export type AssetKind = "video" | "thumbnail" | "photo" | "other";
 
+export interface Person {
+  id: string;
+  name: string;
+  color: string;
+  position: number;
+  created_at: string;
+}
+
 export interface Folder {
   id: string;
   parent_id: string | null;
@@ -21,6 +29,8 @@ export interface Folder {
   color: string;
   description: string;
   position: number;
+  /** personne responsable par défaut des contenus du dossier */
+  assignee_id: string | null;
   created_at: string;
 }
 
@@ -31,6 +41,8 @@ export interface Account {
   handle: string;
   url: string;
   position: number;
+  /** personne qui poste sur ce compte (par défaut) */
+  assignee_id: string | null;
   created_at: string;
 }
 
@@ -40,6 +52,8 @@ export interface Content {
   title: string;
   format: Format;
   notes: string;
+  /** personne qui doit poster ce contenu (sinon : celle du compte, puis du dossier) */
+  assignee_id: string | null;
   /** protège les fichiers de l'archivage automatique */
   keep_files: boolean;
   /** dernière fois que des fichiers ont été retirés du stockage après publication */

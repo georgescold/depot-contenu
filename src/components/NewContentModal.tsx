@@ -2,11 +2,13 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import { effectiveAssignee } from "@/lib/assignee";
 import { FOLDER_COLORS, FORMAT_LIST, FORMATS } from "@/lib/constants";
 import { useLocalState } from "@/lib/use-local-state";
 import type { Format } from "@/lib/types";
 import { useData } from "./data/DataProvider";
 import { FolderPicker } from "./FolderPicker";
+import { inheritedLabel, PersonPicker } from "./people";
 import { Button, Chip, Field, Input, Modal } from "./ui";
 
 type Props = { open: boolean; onClose: () => void; defaultFolderId: string | null };
@@ -18,7 +20,7 @@ export function NewContentModal(props: Props) {
 
 function NewContentForm({ open, onClose, defaultFolderId }: Props) {
   const router = useRouter();
-  const { folders, index, createContent, createFolder } = useData();
+  const { folders, index, people, personById, createContent, createFolder } = useData();
   const [lastFolder, setLastFolder] = useLocalState<string>("new.lastFolder", "");
   const [lastFormat, setLastFormat] = useLocalState<Format>("new.lastFormat", "short");
   const [title, setTitle] = useState("");
@@ -28,6 +30,7 @@ function NewContentForm({ open, onClose, defaultFolderId }: Props) {
   });
   const [format, setFormat] = useState<Format>(lastFormat);
   const [projectName, setProjectName] = useState("");
+  const [assignee, setAssignee] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const busyRef = useRef(false);
@@ -51,7 +54,7 @@ function NewContentForm({ open, onClose, defaultFolderId }: Props) {
       target = f.id;
     }
     if (!target) return done();
-    const c = await createContent({ folder_id: target, title: title.trim() || "Sans titre", format });
+    const c = await createContent({ folder_id: target, title: title.trim() || "Sans titre", format, assignee_id: assignee });
     done();
     if (!c) return;
     setLastFolder(target);
@@ -101,6 +104,15 @@ function NewContentForm({ open, onClose, defaultFolderId }: Props) {
         ) : (
           <Field label="Nom de ton premier projet" hint="Tu pourras créer des sous-projets et des angles ensuite.">
             <Input value={projectName} onChange={(e) => setProjectName(e.target.value)} placeholder="Ex. Compaatible" />
+          </Field>
+        )}
+        {people.length > 0 && (
+          <Field label="Pour qui ?">
+            <PersonPicker
+              value={assignee}
+              onChange={setAssignee}
+              inherited={folderId ? inheritedLabel(effectiveAssignee(index, { folder_id: folderId, assignee_id: null }), personById) : null}
+            />
           </Field>
         )}
         <Field label="Format" group>

@@ -4,7 +4,9 @@ import Link from "next/link";
 import { folderColor, folderPath } from "@/lib/folders";
 import { formatTime } from "@/lib/format";
 import type { Account, ContentFull, Publication } from "@/lib/types";
+import { effectiveAssignee } from "@/lib/assignee";
 import { useData } from "../data/DataProvider";
+import { PersonBadge } from "../people";
 import { Thumb } from "../Thumb";
 import { cn, PlatformBadge, PostedCheck } from "../ui";
 
@@ -19,9 +21,11 @@ export function itemKey(i: PlanItem) {
 }
 
 export function PlanningRow({ item, showDate }: { item: PlanItem; showDate?: string }) {
-  const { savePublication, index } = useData();
+  const { savePublication, index, personById } = useData();
   const { pub, content, account } = item;
   const color = folderColor(index, content.folder_id);
+  const eff = effectiveAssignee(index, content, account);
+  const person = eff ? personById.get(eff.personId) : undefined;
 
   return (
     <div
@@ -48,7 +52,8 @@ export function PlanningRow({ item, showDate }: { item: PlanItem; showDate?: str
             </span>
           </p>
         </div>
-        <div className="shrink-0 text-right">
+        <div className="flex shrink-0 flex-col items-end gap-0.5 text-right">
+          {person && <PersonBadge person={person} size="xs" muted={eff?.source !== "content"} />}
           {showDate && <p className="text-xs text-muted">{showDate}</p>}
           {pub.scheduled_time && (
             <p className="text-sm font-semibold tabular-nums">{formatTime(pub.scheduled_time)}</p>

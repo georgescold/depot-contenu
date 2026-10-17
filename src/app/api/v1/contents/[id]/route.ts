@@ -2,6 +2,7 @@ import type { NextRequest } from "next/server";
 import type { Content, Folder, Publication } from "@/lib/types";
 import { getAdminClient } from "@/lib/supabase/admin";
 import { ApiError, dbFail, handle, json, readObject } from "@/lib/api/http";
+import { loadPeople, peopleMap, resolvePerson } from "@/lib/api/people";
 import { accountLabel, candidatesForFolder, deleteFolders, loadAccounts, loadFolderCtx, resolveFolder } from "@/lib/api/resolve";
 import { appOrigin, getContentRow, loadContentFull } from "@/lib/api/serialize";
 import { purgeObjects } from "@/lib/api/storage";
@@ -18,7 +19,7 @@ export async function GET(req: NextRequest, ctx: Ctx) {
   });
 }
 
-/** PATCH /api/v1/contents/:id { title?, format?, notes?, folder?, create_folders? } */
+/** PATCH /api/v1/contents/:id { title?, format?, notes?, folder?, create_folders?, assignee? } (assignee "none" = retirer) */
 export async function PATCH(req: NextRequest, ctx: Ctx) {
   return handle(req, async () => {
     const id = requireUuid((await ctx.params).id, "id du contenu");
@@ -37,7 +38,9 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
     const notes = optText(body, "notes", { max: 100000, trim: false });
     if (notes !== undefined) patch.notes = notes.trim();
 
-    const [folders, accounts] = await Promise.all([loadFolderCtx(sb), loadAccounts(sb)]);
+    const [folders, accounts, peopleList] = await Promise.all([loadFolderCtx(sb), loadAccounts(sb), loadPeople(sb)]);
+    const assigneeId = resolvePerson(peopleList, body.assignee);
+    if (assigneeId !== undefined) patch.assignee_id = assigneeId;
     const warnings: string[] = [];
     let createdFolders: string[] = [];
     let createdRows: Folder[] = [];
@@ -66,7 +69,7 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
     }
 
     if (!Object.keys(patch).length && !createdFolders.length) {
-      throw new ApiError(400, "Rien à modifier : fournis au moins un champ parmi title, format, notes, folder.");
+      throw new ApiError(400, "Rien à modifier : fournis au moins un champ parmi title, format, notes, folder, assignee.");
     }
 
     let content: Content = current;
@@ -79,7 +82,7 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
       content = data as Content;
     }
 
-    const full = await loadContentFull(sb, id, appOrigin(req), { ctx: folders, accounts, content });
+    const full = await loadContentFull(sb, id, appOrigin(req), { ctx: folders, accounts, content, people: peopleMap(peopleList) });
     return json({ ...full, created_folders: createdFolders, warnings });
   });
 }

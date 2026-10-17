@@ -6,6 +6,8 @@ import { PageBody, PageHeader, Splash, useShell } from "@/components/AppShell";
 import { ContentCard, nextPublication } from "@/components/ContentCard";
 import { useData } from "@/components/data/DataProvider";
 import { FolderPicker } from "@/components/FolderPicker";
+import { PersonFilter } from "@/components/people";
+import { contentMatchesAssignee, UNASSIGNED } from "@/lib/assignee";
 import { Button, Chip, EmptyState, Input, Select } from "@/components/ui";
 import { FORMAT_LIST, FORMATS } from "@/lib/constants";
 import { descendantIds, folderPath } from "@/lib/folders";
@@ -16,7 +18,9 @@ import type { Format } from "@/lib/types";
 const STATUSES: ContentStatus[] = ["draft", "scheduled", "late", "partial", "posted"];
 
 export default function ContentsPage() {
-  const { contents, index, ready } = useData();
+  const { contents, index, ready, accountById, personById } = useData();
+  const [personId, setPersonId] = useLocalState("contents.person", "");
+  const activePerson = personId === UNASSIGNED || personById.has(personId) ? personId : "";
   const { openNewContent } = useShell();
   const [q, setQ] = useState("");
   const [folderId, setFolderId] = useLocalState("contents.folder", "");
@@ -39,6 +43,7 @@ export default function ContentsPage() {
       if (scope && !scope.has(c.folder_id)) return false;
       if (format && c.format !== format) return false;
       if (status && contentStatus(c.publications) !== status) return false;
+      if (activePerson && !contentMatchesAssignee(index, c, accountById, activePerson)) return false;
       if (needle) {
         const hay = `${c.title} ${c.notes} ${folderPath(index, c.folder_id)} ${c.publications.map((p) => p.description).join(" ")}`.toLowerCase();
         if (!hay.includes(needle)) return false;
@@ -53,7 +58,7 @@ export default function ContentsPage() {
       rows.sort((a, b) => key(a).localeCompare(key(b)));
     }
     return rows;
-  }, [contents, scope, format, status, q, sort, index]);
+  }, [contents, scope, format, status, q, sort, index, activePerson, accountById]);
 
   const counts = useMemo(() => {
     const m = new Map<ContentStatus, number>();
@@ -109,6 +114,8 @@ export default function ContentsPage() {
             </Select>
           </div>
           <div className="scrollbar-none -mx-4 flex gap-2 overflow-x-auto px-4 md:mx-0 md:px-0">
+            <PersonFilter value={activePerson} onChange={setPersonId} />
+            {personById.size > 0 && <span className="mx-1 h-5 w-px shrink-0 bg-line" />}
             <Chip active={!status} onClick={() => setStatus("")}>
               Tous
             </Chip>

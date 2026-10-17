@@ -12,8 +12,10 @@ import { SaveToDevice } from "@/components/content/SaveToDevice";
 import { useData } from "@/components/data/DataProvider";
 import { useUploads } from "@/components/upload/UploadProvider";
 import { FolderPicker } from "@/components/FolderPicker";
+import { inheritedLabel, PersonPicker } from "@/components/people";
 import { Button, Chip, EmptyState, Field, IconButton, Pill, SectionTitle } from "@/components/ui";
 import { FORMAT_LIST, FORMATS } from "@/lib/constants";
+import { effectiveAssignee } from "@/lib/assignee";
 import { accountsForFolder, ancestorsOf } from "@/lib/folders";
 import { formatBytes } from "@/lib/format";
 import { contentStatus, STATUS_INFO } from "@/lib/status";
@@ -29,7 +31,7 @@ function kindsFor(format: Format, present: Set<AssetKind>): AssetKind[] {
 export default function ContentPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
-  const { contentById, index, accounts, ready, updateContent, deleteContent } = useData();
+  const { contentById, index, accounts, personById, ready, updateContent, deleteContent } = useData();
   const { activeFor } = useUploads();
   const content = contentById.get(id);
 
@@ -121,6 +123,13 @@ export default function ContentPage() {
                 </Field>
                 <Field label="Rangé dans">
                   <FolderPicker value={content.folder_id} onChange={(v) => v && updateContent(content.id, { folder_id: v })} />
+                </Field>
+                <Field label="Qui le poste ?" hint="Laisse vide pour reprendre la personne du compte ou du projet.">
+                  <PersonPicker
+                    value={content.assignee_id}
+                    onChange={(v) => updateContent(content.id, { assignee_id: v })}
+                    inherited={inheritedLabel(effectiveAssignee(index, { ...content, assignee_id: null }), personById)}
+                  />
                 </Field>
               </div>
             </div>

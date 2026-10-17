@@ -45,6 +45,11 @@ inconnue ou révoquée renvoie **401** (une clé révoquée ne peut pas être r�
   - plateforme (`"instagram"`, alias `ig`, `yt`, `tt`, `twitter`…) : s'il y en a plusieurs, le plus proche du dossier
     (le plus profond) gagne ; égalité → 409 avec `choices` ;
   - handle (`"@didier.immo"` ou `"didier.immo"`) ou `"plateforme:handle"`.
+- **Personne** (`assignee`) : id, ou nom d'une personne existante (`GET /people`), comparé sans casse, accents ni espaces
+  en trop ; `"none"` ou `null` retire l'attribution. Personne inconnue → **404** avec la liste des personnes (jamais de
+  création implicite). **Règle** : une publication revient à la personne du contenu, sinon à celle de son compte, sinon à
+  celle du dossier le plus proche (le dossier ou un parent). Dans les réponses, `assignee` = attribution propre
+  (`{ id, name }` ou `null`) et la personne effective = `{ id, name, source: "content"|"account"|"folder", folder_id? }` ou `null`.
 - **Dates** `AAAA-MM-JJ`, **heures** `HH:MM` (heure de Paris ; `9h30` et `HH:MM:SS` acceptés en entrée).
 - **Énumérations** : formats `video|short|carousel|photo|story|other` ; fichiers `video|thumbnail|photo|other` ;
   plateformes `youtube|instagram|tiktok|facebook|linkedin|x|threads|pinterest|snapchat|other` ;
@@ -67,6 +72,27 @@ curl -s "$DEPOT_API_URL/api/v1/me" -H "Authorization: Bearer $DEPOT_API_KEY"
            "max_files_per_request": 100, "today": "2026-10-17" } }
 ```
 
+## GET /api/v1/people
+
+Personnes (tags « Enzo », « Loys »…), triées par `position` puis nom.
+
+```bash
+curl -s "$DEPOT_API_URL/api/v1/people" -H "Authorization: Bearer $DEPOT_API_KEY"
+```
+
+```json
+{ "people": [ { "id": "…", "name": "Enzo", "color": "#0ea5e9", "position": 0, "created_at": "…" } ] }
+```
+
+## POST /api/v1/people
+
+`{ name, color? }` → 201 `{ person }`. **409** si le nom existe déjà (casse, accents et espaces ignorés) ; `none` est réservé.
+
+```bash
+curl -s -X POST "$DEPOT_API_URL/api/v1/people" -H "Authorization: Bearer $DEPOT_API_KEY" \
+  -H "content-type: application/json" -d '{"name":"Enzo","color":"#0ea5e9"}'
+```
+
 ## GET /api/v1/folders
 
 Liste à plat, triée dans l'ordre de l'arbre.
@@ -79,17 +105,21 @@ curl -s "$DEPOT_API_URL/api/v1/folders" -H "Authorization: Bearer $DEPOT_API_KEY
 { "folders": [
   { "id": "…", "parent_id": null, "name": "Projet", "path": "Projet", "depth": 0, "color": "#14b8a6",
     "description": "", "position": 0, "created_at": "…", "contents_count": 0, "total_contents": 3,
+    "assignee": { "id": "…", "name": "Enzo" }, "effective_assignee": { "id": "…", "name": "Enzo", "source": "folder", "folder_id": "…" },
     "accounts": [ { "id": "…", "folder_id": "…", "platform": "instagram", "platform_label": "Instagram",
-                    "handle": "@projet", "url": "", "ref": "instagram:@projet" } ] }
+                    "handle": "@projet", "url": "", "ref": "instagram:@projet", "assignee": null } ] }
 ] }
 ```
 
 `contents_count` = contenus directement dans le dossier, `total_contents` = avec les sous-dossiers ; `accounts` = comptes
-propres au dossier (pas ceux hérités des parents).
+propres au dossier (pas ceux hérités des parents). `assignee` = personne du dossier lui-même ; `effective_assignee` =
+la sienne ou celle du parent le plus proche.
 
 ## POST /api/v1/folders
 
-`{ path, color?, description? }` : crée le chemin (mkdir -p) et renvoie le dossier final (201 si quelque chose a été créé, 200 sinon).
+`{ path, color?, description?, assignee? }` : crée le chemin (mkdir -p) et renvoie le dossier final (201 si quelque chose a
+été créé, 200 sinon). `color`, `description` et `assignee` s'appliquent au dossier final (même s'il existait) ; une
+personne inconnue donne 404 **avant** toute création.
 
 ```bash
 curl -s -X POST "$DEPOT_API_URL/api/v1/folders" -H "Authorization: Bearer $DEPOT_API_KEY" \
@@ -101,18 +131,35 @@ curl -s -X POST "$DEPOT_API_URL/api/v1/folders" -H "Authorization: Bearer $DEPOT
   "created": ["Compaatible", "Compaatible / Lancement", "Compaatible / Lancement / Angle jalousie"], "existed": false }
 ```
 
+## PATCH /api/v1/folders/:id
+
+`{ assignee?, name?, color?, description? }` → `{ folder }`. `:id` = uuid du dossier, ou son chemin encodé en un seul
+segment (`Projet%2FAngle`). Le nom ne peut pas contenir `/`, `>` ni `›` (400) et doit être unique parmi ses voisins (409).
+
+```bash
+curl -s -X PATCH "$DEPOT_API_URL/api/v1/folders/Compaatible%2FLancement" -H "Authorization: Bearer $DEPOT_API_KEY" \
+  -H "content-type: application/json" -d '{"assignee":"Loys"}'
+```
+
 ## POST /api/v1/accounts
 
-`{ folder, platform, handle, url?, create_folders? }` → 201 `{ account }` ; 409 si ce compte (plateforme + handle) existe déjà.
+`{ folder, platform, handle, url?, assignee?, create_folders? }` → 201 `{ account }` ; 409 si ce compte (plateforme + handle) existe déjà.
 
 ```bash
 curl -s -X POST "$DEPOT_API_URL/api/v1/accounts" -H "Authorization: Bearer $DEPOT_API_KEY" \
   -H "content-type: application/json" -d '{"folder":"Compaatible","platform":"instagram","handle":"@compaatible"}'
 ```
 
+## PATCH /api/v1/accounts/:id
+
+`{ assignee?, handle?, url? }` → `{ account }` (`assignee: "none"` retire l'attribution ; handle en double sur la même
+plateforme du même dossier → 409).
+
 ## GET /api/v1/contents
 
-`?folder=&status=&format=&q=&limit=` : `folder` inclut les sous-dossiers ; `q` cherche dans le titre (sans casse ; les
+`?folder=&status=&format=&q=&assignee=&limit=` : `folder` inclut les sous-dossiers ; `assignee` = nom, id ou `none` :
+un contenu correspond si sa personne effective (contenu, sinon dossier) **ou** celle d'une de ses publications (via le
+compte) est cette personne ; `none` = ni le contenu ni aucune publication n'est attribué ; `q` cherche dans le titre (sans casse ; les
 caractères `* % _ , ( ) \` comptent comme « n'importe quel caractère ») ; `limit` 50 par défaut, 200 max. Plus récents d'abord.
 
 ```bash
@@ -123,21 +170,23 @@ curl -s -G "$DEPOT_API_URL/api/v1/contents" -H "Authorization: Bearer $DEPOT_API
 ```json
 { "contents": [
   { "id": "…", "title": "…", "format": "carousel", "folder_id": "…", "folder_path": "Projet / Angle", "status": "partial",
+    "assignee": null, "effective_assignee": { "id": "…", "name": "Enzo", "source": "folder", "folder_id": "…" },
     "files": { "video": 0, "thumbnail": 1, "photo": 2, "other": 0, "total": 3 },
     "publications": [ { "id": "…", "account_id": "…", "platform": "instagram", "handle": "@projet", "ref": "instagram:@projet",
-                        "date": "2026-10-20", "time": "18:00", "posted": true, "late": false } ],
+                        "date": "2026-10-20", "time": "18:00", "posted": true, "late": false,
+                        "assignee": { "id": "…", "name": "Loys", "source": "account" } } ],
     "url": "…/contenus/…", "created_at": "…", "updated_at": "…" } ],
   "total": 1, "limit": 50 }
 ```
 
 ## POST /api/v1/contents
 
-`{ folder, create_folders?, title, format?, notes?, publications?: [{ account, date?, time?, title?, description?, posted?, post_url? }], dry_run? }`
+`{ folder, create_folders?, title, format?, notes?, assignee?, publications?: [{ account, date?, time?, title?, description?, posted?, post_url? }], dry_run? }`
 → 201 avec le contenu complet (forme de `GET /contents/:id`) + `created_folders` + `warnings`. Tout est validé avant
 écriture ; en cas d'erreur, rien ne reste. `format` vaut `video` par défaut ; une publication par compte.
 
 **`dry_run: true`** : valide tout (dossier, comptes, dates, doublons) **sans rien écrire** → 200
-`{ dry_run, title, format, folder_id, folder_path, missing_folders, publications: [{ account, date, time }], warnings }`
+`{ dry_run, title, format, assignee, folder_id, folder_path, missing_folders, publications: [{ account, date, time }], warnings }`
 (`folder_id` est `null` si des dossiers restent à créer). Le CLI s'en sert avant d'envoyer les fichiers.
 
 ```bash
@@ -153,16 +202,20 @@ nom d'origine (`response-content-disposition` : `filename="<ASCII de secours>"` 
 ```json
 { "id": "…", "title": "…", "format": "carousel", "notes": "…", "folder_id": "…", "folder_path": "Projet / Angle",
   "status": "scheduled", "created_at": "…", "updated_at": "…", "url": "…/contenus/…",
+  "assignee": { "id": "…", "name": "Enzo" }, "effective_assignee": { "id": "…", "name": "Enzo", "source": "content" },
   "assets": [ { "id": "…", "kind": "thumbnail", "position": 0, "file_name": "Légende été.png", "mime_type": "image/png",
                 "size_bytes": 211, "storage_path": "<id>/thumbnail/mvcpl98y-axnq-Legende-ete.png", "created_at": "…",
                 "download_url": "https://s3.<région>.backblazeb2.com/<bucket>/<id>/thumbnail/…?response-content-disposition=attachment%3B…&X-Amz-Expires=3600&X-Amz-Signature=…" } ],
   "publications": [ { "id": "…", "account_id": "…", "account": { "id": "…", "platform": "instagram", "handle": "@projet", "url": "…", "ref": "instagram:@projet" },
                       "date": "2026-10-20", "time": "18:00", "title": "", "description": "…", "posted": false,
-                      "posted_at": null, "post_url": "", "late": false, "updated_at": "…" } ],
-  "available_accounts": [ { "id": "…", "folder_path": "Projet", "platform": "instagram", "handle": "@projet", "ref": "instagram:@projet", "...": "…" } ] }
+                      "posted_at": null, "post_url": "", "late": false,
+                      "assignee": { "id": "…", "name": "Enzo", "source": "content" }, "updated_at": "…" } ],
+  "available_accounts": [ { "id": "…", "folder_path": "Projet", "platform": "instagram", "handle": "@projet", "ref": "instagram:@projet", "assignee": null, "...": "…" } ] }
 ```
 
 `assets` : tri par type (`video`, `thumbnail`, `photo`, `other`) puis `position` ; `publications` : par date puis heure.
+`assignee` = personne attribuée au contenu lui-même ; `effective_assignee` = la sienne, sinon celle du dossier le plus
+proche ; `publications[].assignee` = personne effective de chaque publication (contenu → compte → dossier).
 
 **Archivage après publication.** Quand toutes les publications d'un contenu sont postées, ses fichiers lourds sont retirés
 du stockage après le délai réglé dans l'app (3 jours par défaut ; une miniature ou 1re slide de 2 Mo max est gardée).
@@ -171,7 +224,7 @@ Les lignes restent : `archived_at` est alors renseigné et `download_url` vaut `
 
 ## PATCH /api/v1/contents/:id
 
-`{ title?, format?, notes?, folder?, create_folders? }` (`folder` = déplacer). Les publications dont le compte n'est plus
+`{ title?, format?, notes?, folder?, create_folders?, assignee? }` (`folder` = déplacer ; `assignee: "none"` retire l'attribution). Les publications dont le compte n'est plus
 accessible depuis le nouveau dossier sont gardées, avec un `warning`.
 
 ```bash
@@ -205,7 +258,8 @@ curl -s -X PUT "$DEPOT_API_URL/api/v1/contents/<id>/publications" -H "Authorizat
 ```
 
 ```json
-{ "publication": { "id": "…", "account": { "...": "…" }, "date": "2026-10-22", "time": "09:30", "posted": false, "late": false, "...": "…" },
+{ "publication": { "id": "…", "account": { "...": "…" }, "date": "2026-10-22", "time": "09:30", "posted": false, "late": false,
+                   "assignee": { "id": "…", "name": "Loys", "source": "account" }, "...": "…" },
   "created": false, "content": { "id": "…", "title": "…", "status": "scheduled", "url": "…" }, "warnings": [] }
 ```
 
@@ -289,28 +343,32 @@ Supprime la ligne, puis l'objet B2 au mieux → `{ deleted, id, content_id, file
 
 ## GET /api/v1/calendar
 
-`?from=&to=&folder=&account=&include_posted=` : par défaut d'aujourd'hui (Paris) à +30 jours, non postées seulement.
-`folder` inclut les sous-dossiers ; `account` = une plateforme (tous ses comptes) ou un compte précis. Tri par date puis
-heure. `overdue` = publications non postées dont la date est passée (toutes dates, mêmes filtres).
+`?from=&to=&folder=&account=&assignee=&include_posted=` : par défaut d'aujourd'hui (Paris) à +30 jours, non postées
+seulement. `folder` inclut les sous-dossiers ; `account` = une plateforme (tous ses comptes) ou un compte précis ;
+`assignee` = nom, id ou `none`, comparé à la **personne effective de chaque publication** (contenu → compte → dossier).
+Tri par date puis heure. `overdue` = publications non postées dont la date est passée (toutes dates, mêmes filtres).
+La réponse rappelle le filtre : `assignee` = `{ id, name }`, `"none"` ou `null`.
 
 ```bash
 curl -s -G "$DEPOT_API_URL/api/v1/calendar" -H "Authorization: Bearer $DEPOT_API_KEY" \
-  --data-urlencode "from=2026-10-19" --data-urlencode "to=2026-10-25"
+  --data-urlencode "from=2026-10-19" --data-urlencode "to=2026-10-25" --data-urlencode "assignee=Enzo"
 ```
 
 ```json
 { "from": "2026-10-19", "to": "2026-10-25", "today": "2026-10-17", "include_posted": false,
+  "assignee": { "id": "…", "name": "Enzo" },
   "publications": [ { "publication_id": "…", "date": "2026-10-22", "time": "09:30", "posted": false, "late": false,
                       "title": "", "description": "…", "post_url": "",
                       "account": { "id": "…", "platform": "tiktok", "handle": "@projet", "ref": "tiktok:@projet" },
                       "content": { "id": "…", "title": "…", "format": "carousel", "url": "…" },
-                      "folder_id": "…", "folder_path": "Projet / Angle" } ],
+                      "folder_id": "…", "folder_path": "Projet / Angle",
+                      "assignee": { "id": "…", "name": "Enzo", "source": "account" } } ],
   "overdue": [] }
 ```
 
 ---
 
-## CLI `cli/depot.mjs` (version 2.0.0)
+## CLI `cli/depot.mjs` (version 2.1.0)
 
 Zéro dépendance, Node ≥ 20. Config : `DEPOT_API_URL` / `DEPOT_API_KEY`, sinon `~/.depot-contenu.json`
 (`{ "url", "key" }`, écrit par `config`). La clé du fichier n'est envoyée qu'à l'URL du fichier : si `DEPOT_API_URL`
@@ -321,18 +379,22 @@ diffère, il faut aussi `DEPOT_API_KEY`. Sortie lisible en français ; `--json` 
 ```bash
 node cli/depot.mjs config --url "https://app" --key -           # « - » : colle la clé (entrée standard)
 node cli/depot.mjs me | version | folders
-node cli/depot.mjs mkdir "Projet/Sous-projet/Angle" [--color "#14b8a6"]
-node cli/depot.mjs account add --folder "Projet" --platform instagram --handle "@moncompte" [--url …]
-node cli/depot.mjs list [--folder …] [--status late] [--format …] [--q …] [--limit 50]
+node cli/depot.mjs people                                           # Enzo, Loys…
+node cli/depot.mjs people add "Prénom" [--color "#0ea5e9"]
+node cli/depot.mjs mkdir "Projet/Sous-projet/Angle" [--color "#14b8a6"] [--assignee Enzo]
+node cli/depot.mjs folder edit "Projet/Angle" [--assignee Loys|none] [--name …] [--color …] [--description …]
+node cli/depot.mjs account add --folder "Projet" --platform instagram --handle "@moncompte" [--url …] [--assignee Enzo]
+node cli/depot.mjs account edit <accountId> [--assignee Enzo|none] [--handle …] [--url …]
+node cli/depot.mjs list [--folder …] [--status late] [--format …] [--q …] [--assignee Loys|none] [--limit 50]
 node cli/depot.mjs get <id>
 node cli/depot.mjs push manifest.json [--rollback]
 node cli/depot.mjs upload <id> video.mp4 "cover.png:thumbnail" ./slides [--kind photo]
-node cli/depot.mjs edit <id> [--title …] [--format …] [--notes … | --notes-file f.txt] [--folder "Projet/Angle"] [--create-folders]
+node cli/depot.mjs edit <id> [--title …] [--format …] [--notes … | --notes-file f.txt] [--folder "Projet/Angle"] [--create-folders] [--assignee Enzo|none]
 node cli/depot.mjs schedule <id> --account tiktok --date 2026-10-21 [--time 18:00] [--title …] [--description … | --description-file f.txt]
 node cli/depot.mjs schedule <id> --account tiktok --date none        # déprogrammer (garder la publication)
 node cli/depot.mjs unschedule <id> --account tiktok                   # supprimer la publication
 node cli/depot.mjs posted <id> --account instagram [--url https://…] [--undo]
-node cli/depot.mjs calendar [--from …] [--to …] [--folder …] [--account …] [--include-posted]
+node cli/depot.mjs calendar [--from …] [--to …] [--folder …] [--account …] [--assignee Enzo|none] [--include-posted]
 node cli/depot.mjs set-kind <assetId> thumbnail
 node cli/depot.mjs rm-file <assetId>
 node cli/depot.mjs delete <id> --yes
@@ -372,6 +434,7 @@ Chemins relatifs au manifest (ou absolus).
 |---|---|
 | `folder`, `create_folders` | Dossier cible (chemin ou uuid) ; crée les segments manquants |
 | `title`, `format`, `notes` / `notes_file` | Contenu (`format` : `video` par défaut) |
+| `assignee` | Personne du contenu (nom ou id d'une personne existante ; vérifiée avant tout envoi) |
 | `files` | Chemins ou `{ path, kind }` ; sans `kind`, déduit du type de fichier |
 | `dir` | Dossier (ou liste) : toutes les images (png, jpg, jpeg, webp, gif, heic, heif, avif, jfif) en `photo`, tri naturel ; fichiers cachés (`.…`, `._…`), sous-dossiers et autres formats ignorés avec avertissement ; erreur si aucune image |
 | `publications` | Comme l'API ; `description_file` / `title_file` lisent un fichier texte |

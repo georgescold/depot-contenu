@@ -4,7 +4,9 @@ import { presignGet } from "@/lib/b2";
 import { ASSET_KIND_LIST, PLATFORMS } from "@/lib/constants";
 import { contentStatus, isLate } from "@/lib/status";
 import type { Account, Asset, AssetKind, Content, Folder, Publication } from "@/lib/types";
+import { effectiveAssignee } from "@/lib/assignee";
 import { ApiError, dbFail } from "./errors";
+import { effectiveJson, loadPeople, peopleMap, personJson, type PeopleMap } from "./people";
 import {
   accountLabel,
   candidatesForFolder,
@@ -35,7 +37,7 @@ export const hhmm = (t: string | null | undefined): string | null => (t ? t.slic
 
 /* ---------- Dossiers & comptes ---------- */
 
-export function serializeAccount(a: Account, ctx?: FolderCtx) {
+export function serializeAccount(a: Account, people: PeopleMap, ctx?: FolderCtx) {
   return {
     id: a.id,
     folder_id: a.folder_id,
@@ -45,10 +47,21 @@ export function serializeAccount(a: Account, ctx?: FolderCtx) {
     handle: a.handle,
     url: a.url,
     ref: accountLabel(a),
+    assignee: personJson(people, a.assignee_id),
   };
 }
 
-export function serializeFolder(f: Folder, ctx: FolderCtx) {
+/** Personne d'un dossier : la sienne, sinon celle du parent le plus proche (source « folder »). */
+export function folderEffective(ctx: FolderCtx, people: PeopleMap, folderId: string) {
+  const chain = ctx.chain(folderId);
+  for (let i = chain.length - 1; i >= 0; i--) {
+    const id = chain[i].assignee_id;
+    if (id && people.has(id)) return { id, name: people.get(id)!.name, source: "folder" as const, folder_id: chain[i].id };
+  }
+  return null;
+}
+
+export function serializeFolder(f: Folder, ctx: FolderCtx, people: PeopleMap) {
   return {
     id: f.id,
     parent_id: f.parent_id,
@@ -59,12 +72,19 @@ export function serializeFolder(f: Folder, ctx: FolderCtx) {
     description: f.description,
     position: f.position,
     created_at: f.created_at,
+    assignee: personJson(people, f.assignee_id),
+    effective_assignee: folderEffective(ctx, people, f.id),
   };
 }
 
 /* ---------- Publications ---------- */
 
-export function serializePublication(p: Publication, account: Account | undefined, today = todayParis()) {
+export function serializePublication(
+  p: Publication,
+  account: Account | undefined,
+  today = todayParis(),
+  assignee: ReturnType<typeof effectiveJson> = null,
+) {
   return {
     id: p.id,
     account_id: p.account_id,
@@ -79,8 +99,20 @@ export function serializePublication(p: Publication, account: Account | undefine
     posted_at: p.posted_at,
     post_url: p.post_url,
     late: isLate(p, today),
+    /** Personne effective de la publication : contenu, sinon compte, sinon dossier. */
+    assignee,
     updated_at: p.updated_at,
   };
+}
+
+/** Personne effective d'une publication (contenu → compte → dossier). */
+export function pubAssignee(
+  ctx: FolderCtx,
+  people: PeopleMap,
+  content: Pick<Content, "assignee_id" | "folder_id">,
+  account: Pick<Account, "assignee_id"> | undefined | null,
+) {
+  return effectiveJson(people, effectiveAssignee(ctx.index, content, account));
 }
 
 /** Tri : date (non programmées à la fin), heure, plateforme. */
@@ -172,14 +204,15 @@ export async function loadContentFull(
   sb: SupabaseClient,
   id: string,
   origin: string,
-  pre?: { ctx?: FolderCtx; accounts?: Account[]; content?: Content },
+  pre?: { ctx?: FolderCtx; accounts?: Account[]; content?: Content; people?: PeopleMap },
 ) {
-  const [content, assetsRes, pubsRes, ctx, accounts] = await Promise.all([
+  const [content, assetsRes, pubsRes, ctx, accounts, people] = await Promise.all([
     pre?.content ?? getContentRow(sb, id),
     sb.from("assets").select("*").eq("content_id", id),
     sb.from("publications").select("*").eq("content_id", id),
     pre?.ctx ?? loadFolderCtx(sb),
     pre?.accounts ?? loadAccounts(sb),
+    pre?.people ?? loadPeople(sb).then(peopleMap),
   ]);
   if (assetsRes.error) throw dbFail(assetsRes.error, "lecture des fichiers");
   if (pubsRes.error) throw dbFail(pubsRes.error, "lecture des publications");
@@ -188,7 +221,10 @@ export async function loadContentFull(
   const pubs = (pubsRes.data ?? []) as Publication[];
   const byId = new Map(accounts.map((a) => [a.id, a]));
   const publications = pubs
-    .map((p) => serializePublication(p, byId.get(p.account_id), today))
+    .map((p) => {
+      const account = byId.get(p.account_id);
+      return serializePublication(p, account, today, pubAssignee(ctx, people, content, account));
+    })
     .sort((a, b) => comparePubs({ ...a, platform: a.account?.platform }, { ...b, platform: b.account?.platform }));
 
   return {
@@ -198,6 +234,10 @@ export async function loadContentFull(
     notes: content.notes,
     keep_files: content.keep_files ?? false,
     files_archived_at: content.files_archived_at ?? null,
+    /** Personne attribuée au contenu lui-même (null = pas d'attribution propre). */
+    assignee: personJson(people, content.assignee_id),
+    /** Personne effective du contenu : la sienne, sinon celle du dossier le plus proche. */
+    effective_assignee: pubAssignee(ctx, people, content, null),
     folder_id: content.folder_id,
     folder_path: ctx.path(content.folder_id),
     status: contentStatus(pubs, today),
@@ -206,7 +246,7 @@ export async function loadContentFull(
     url: contentUrl(origin, content.id),
     assets: await serializeAssets((assetsRes.data ?? []) as Asset[]),
     publications,
-    available_accounts: candidatesForFolder(ctx, accounts, content.folder_id).map((c) => serializeAccount(c.account, ctx)),
+    available_accounts: candidatesForFolder(ctx, accounts, content.folder_id).map((c) => serializeAccount(c.account, people, ctx)),
   };
 }
 

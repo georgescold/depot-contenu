@@ -7,8 +7,9 @@ import { useData } from "@/components/data/DataProvider";
 import { useToast } from "@/components/Toast";
 import { Button, Card, Field, IconButton, Input, Modal, Pill, SectionTitle, Select } from "@/components/ui";
 import { apiKeyDisplayPrefix, generateApiKey, hashApiKey } from "@/lib/apikey";
+import { AutoField } from "@/components/AutoField";
 import { ARCHIVE_DELAY_CHOICES, archiveDelayLabel } from "@/lib/archive-rules";
-import { FREE_STORAGE_GB, MAX_FILE_MB } from "@/lib/constants";
+import { FOLDER_COLORS, FREE_STORAGE_GB, MAX_FILE_MB } from "@/lib/constants";
 import { authedFetch } from "@/lib/client-fetch";
 import { copyText } from "@/lib/clipboard";
 import { dateTimeLabel, formatBytes } from "@/lib/format";
@@ -23,6 +24,7 @@ export default function SettingsPage() {
       <PageHeader title="Réglages" />
       <PageBody className="max-w-3xl space-y-10">
         <AccountSection />
+        <PeopleSection />
         <TeamSection />
         <ApiKeysSection />
         <StorageSection />
@@ -83,6 +85,91 @@ function AccountSection() {
           </Button>
         </form>
       </Card>
+    </section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+
+/** Personnes (tags) à qui on attribue les contenus à poster. Indépendant des comptes de connexion. */
+function PeopleSection() {
+  const { people, contents, folders, accounts, createPerson, updatePerson, deletePerson } = useData();
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const add = async () => {
+    const n = name.trim();
+    if (!n || busy) return;
+    setBusy(true);
+    const color = FOLDER_COLORS[(people.length + 4) % FOLDER_COLORS.length];
+    if (await createPerson({ name: n, color })) setName("");
+    setBusy(false);
+  };
+
+  const uses = (id: string) =>
+    contents.filter((c) => c.assignee_id === id).length +
+    folders.filter((x) => x.assignee_id === id).length +
+    accounts.filter((x) => x.assignee_id === id).length;
+
+  return (
+    <section>
+      <SectionTitle>Personnes</SectionTitle>
+      <Card className="divide-y divide-line">
+        {people.map((p) => (
+          <div key={p.id} className="flex items-center gap-3 p-3 pl-4">
+            <label className="relative shrink-0" title="Changer la couleur">
+              <span className="block size-7 rounded-full" style={{ background: p.color }} />
+              <select
+                aria-label={`Couleur de ${p.name}`}
+                value={p.color}
+                onChange={(e) => updatePerson(p.id, { color: e.target.value })}
+                className="absolute inset-0 cursor-pointer opacity-0"
+              >
+                {FOLDER_COLORS.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <AutoField
+              value={p.name}
+              onCommit={(v) => (v.trim() ? updatePerson(p.id, { name: v.trim() }) : Promise.resolve(false))}
+              className="h-9 flex-1"
+              aria-label="Nom"
+            />
+            <IconButton
+              label={`Supprimer ${p.name}`}
+              className="hover:text-danger"
+              onClick={() => {
+                const n = uses(p.id);
+                const warn = n
+                  ? `\n\n${n} contenu(s), dossier(s) ou compte(s) lui sont attribués : ils deviendront « non attribués ».`
+                  : "";
+                if (confirm(`Supprimer « ${p.name} » ?${warn}`)) deletePerson(p.id);
+              }}
+            >
+              <Trash2 className="size-4" />
+            </IconButton>
+          </div>
+        ))}
+        <form
+          className="flex items-center gap-2 p-3 pl-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            add();
+          }}
+        >
+          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ajouter une personne (ex. Enzo)" className="h-9 flex-1" />
+          <Button type="submit" size="sm" icon={<Plus className="size-4" />} loading={busy} disabled={!name.trim()}>
+            Ajouter
+          </Button>
+        </form>
+      </Card>
+      <p className="mt-2 text-xs text-muted">
+        Attribue un contenu, un compte ou un projet à une personne, puis filtre le planning et la bibliothèque par personne.
+        Un contenu sans personne prend celle de son compte, sinon celle de son projet.
+      </p>
     </section>
   );
 }

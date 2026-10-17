@@ -10,6 +10,9 @@ import { Agenda } from "@/components/planning/Agenda";
 import { MonthView } from "@/components/planning/MonthView";
 import type { PlanItem } from "@/components/planning/PlanningRow";
 import { ScheduleModal } from "@/components/planning/ScheduleModal";
+import { WeekView } from "@/components/planning/WeekView";
+import { PersonFilter } from "@/components/people";
+import { effectiveAssignee, UNASSIGNED } from "@/lib/assignee";
 import { Button, Card, Chip, Segmented, Select } from "@/components/ui";
 import { PLATFORMS } from "@/lib/constants";
 import { ancestorsOf, descendantIds, folderPath } from "@/lib/folders";
@@ -18,9 +21,11 @@ import { contentStatus, todayISO } from "@/lib/status";
 import { useLocalState } from "@/lib/use-local-state";
 
 export default function PlanningPage() {
-  const { contents, folders, accounts, accountById, index, ready } = useData();
+  const { contents, folders, accounts, accountById, index, ready, personById } = useData();
   const { openNewContent } = useShell();
-  const [view, setView] = useLocalState<"agenda" | "mois">("planning.view", "agenda");
+  const [view, setView] = useLocalState<"agenda" | "semaine" | "mois">("planning.view", "agenda");
+  const [personId, setPersonId] = useLocalState("planning.person", "");
+  const activePerson = personId === UNASSIGNED || personById.has(personId) ? personId : "";
   const [folderId, setFolderId] = useLocalState("planning.folder", "");
   const [accountId, setAccountId] = useLocalState("planning.account", "");
   const [hidePosted, setHidePosted] = useLocalState("planning.hidePosted", false);
@@ -46,7 +51,12 @@ export default function PlanningPage() {
       for (const p of c.publications) {
         if (!p.scheduled_date) continue;
         if (activeAccount && p.account_id !== activeAccount) continue;
-        out.push({ pub: p, content: c, account: accountById.get(p.account_id) });
+        const account = accountById.get(p.account_id);
+        if (activePerson) {
+          const who = effectiveAssignee(index, c, account)?.personId ?? UNASSIGNED;
+          if (who !== activePerson) continue;
+        }
+        out.push({ pub: p, content: c, account });
       }
     }
     return out.sort(
@@ -55,7 +65,7 @@ export default function PlanningPage() {
         (a.pub.scheduled_time ?? "99").localeCompare(b.pub.scheduled_time ?? "99") ||
         a.content.title.localeCompare(b.content.title, "fr"),
     );
-  }, [contents, scope, activeAccount, accountById]);
+  }, [contents, scope, activeAccount, accountById, activePerson, index]);
 
   const today = todayISO();
   const todayItems = items.filter((i) => i.pub.scheduled_date === today);
@@ -84,6 +94,7 @@ export default function PlanningPage() {
             onChange={setView}
             options={[
               { value: "agenda", label: "Agenda" },
+              { value: "semaine", label: "Semaine" },
               { value: "mois", label: "Mois" },
             ]}
           />
@@ -115,6 +126,9 @@ export default function PlanningPage() {
             {hidePosted ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
             {hidePosted ? "Postés masqués" : "Masquer les postés"}
           </Chip>
+        </div>
+        <div className="scrollbar-none -mx-4 mt-2 flex items-center gap-2 overflow-x-auto px-4 md:mx-0 md:flex-wrap md:px-0">
+          <PersonFilter value={activePerson} onChange={setPersonId} />
         </div>
       </PageHeader>
 
@@ -160,6 +174,8 @@ export default function PlanningPage() {
 
         {view === "agenda" ? (
           <Agenda items={items} hidePosted={hidePosted} onSchedule={setScheduleDate} />
+        ) : view === "semaine" ? (
+          <WeekView items={items} hidePosted={hidePosted} onSchedule={setScheduleDate} />
         ) : (
           <MonthView items={items} hidePosted={hidePosted} onSchedule={setScheduleDate} />
         )}

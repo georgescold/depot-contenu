@@ -3,10 +3,12 @@
 import { Check } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { FOLDER_COLORS } from "@/lib/constants";
+import { effectiveAssignee } from "@/lib/assignee";
 import { descendantIds } from "@/lib/folders";
 import type { Folder } from "@/lib/types";
 import { useData } from "./data/DataProvider";
 import { FolderPicker } from "./FolderPicker";
+import { inheritedLabel, PersonPicker } from "./people";
 import { Button, cn, Field, Input, Modal, Textarea } from "./ui";
 
 /** Création ou modification d'un dossier (projet, sous-projet, angle…). */
@@ -25,7 +27,7 @@ export function FolderFormModal(props: Props) {
 }
 
 function FolderForm({ open, onClose, folder, parentId, onSaved }: Props) {
-  const { index, createFolder, updateFolder } = useData();
+  const { index, personById, createFolder, updateFolder } = useData();
   const initialParent = folder ? folder.parent_id : parentId ?? null;
   const [name, setName] = useState(folder?.name ?? "");
   const [color, setColor] = useState(() => {
@@ -35,6 +37,7 @@ function FolderForm({ open, onClose, folder, parentId, onSaved }: Props) {
   });
   const [description, setDescription] = useState(folder?.description ?? "");
   const [parent, setParent] = useState(initialParent ?? "");
+  const [assignee, setAssignee] = useState<string | null>(folder?.assignee_id ?? null);
   const [busy, setBusy] = useState(false);
 
   const isRoot = !parent;
@@ -53,10 +56,10 @@ function FolderForm({ open, onClose, folder, parentId, onSaved }: Props) {
     setBusy(true);
     let saved: Folder | null = null;
     if (folder) {
-      const ok = await updateFolder(folder.id, { name: n, color, description, parent_id: parent || null });
-      if (ok) saved = { ...folder, name: n, color, description, parent_id: parent || null };
+      const ok = await updateFolder(folder.id, { name: n, color, description, parent_id: parent || null, assignee_id: assignee });
+      if (ok) saved = { ...folder, name: n, color, description, parent_id: parent || null, assignee_id: assignee };
     } else {
-      saved = await createFolder({ name: n, color, description, parent_id: parent || null });
+      saved = await createFolder({ name: n, color, description, parent_id: parent || null, assignee_id: assignee });
     }
     busyRef.current = false;
     if (!alive.current) return; // fenêtre fermée pendant l'enregistrement : on ne navigue pas
@@ -115,6 +118,16 @@ function FolderForm({ open, onClose, folder, parentId, onSaved }: Props) {
               </button>
             ))}
           </div>
+        </Field>
+        <Field label="Responsable par défaut" hint="Les contenus de ce dossier lui reviennent, sauf autre choix sur le contenu ou le compte.">
+          <PersonPicker
+            value={assignee}
+            onChange={setAssignee}
+            inherited={inheritedLabel(
+              parent ? effectiveAssignee(index, { folder_id: parent, assignee_id: null }) : null,
+              personById,
+            )}
+          />
         </Field>
         <Field label="Description (facultatif)" hint="Cible, promesse, ton… pour te rappeler l'angle.">
           <Textarea value={description} onChange={(e) => setDescription(e.target.value)} className="min-h-20" />
