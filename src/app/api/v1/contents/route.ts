@@ -1,0 +1,191 @@
+import type { NextRequest } from "next/server";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { ASSET_KIND_LIST } from "@/lib/constants";
+import { contentStatus, isLate, type ContentStatus } from "@/lib/status";
+import type { Account, AssetKind, Content, Folder, Format, Publication } from "@/lib/types";
+import { getAdminClient } from "@/lib/supabase/admin";
+import { ApiError, dbFail, fetchAll, handle, json, readObject } from "@/lib/api/http";
+import { newPubRow, parsePubInput } from "@/lib/api/publications";
+import {
+  accountLabel,
+  candidatesForFolder,
+  loadAccounts,
+  loadFolderCtx,
+  resolveAccountRef,
+  resolveFolder,
+  type FolderCtx,
+} from "@/lib/api/resolve";
+import { appOrigin, comparePubs, contentUrl, hhmm, loadContentFull, publicationWarnings } from "@/lib/api/serialize";
+import { optBool, optFormat, optText, parseFormat, reqText, todayParis } from "@/lib/api/validate";
+
+const STATUSES: ContentStatus[] = ["draft", "scheduled", "late", "partial", "posted"];
+
+type Row = Pick<Content, "id" | "folder_id" | "title" | "format" | "notes" | "created_at" | "updated_at"> & {
+  assets: { kind: AssetKind }[] | null;
+  publications: Pick<Publication, "id" | "account_id" | "scheduled_date" | "scheduled_time" | "posted">[] | null;
+};
+
+const LIST_SELECT =
+  "id, folder_id, title, format, notes, created_at, updated_at, assets(kind), publications(id, account_id, scheduled_date, scheduled_time, posted)";
+
+function summarize(r: Row, ctx: FolderCtx, accounts: Map<string, Account>, origin: string, today: string) {
+  const pubs = r.publications ?? [];
+  const files = Object.fromEntries(ASSET_KIND_LIST.map((k) => [k, 0])) as Record<AssetKind, number>;
+  for (const a of r.assets ?? []) files[a.kind] = (files[a.kind] ?? 0) + 1;
+  return {
+    id: r.id,
+    title: r.title,
+    format: r.format,
+    folder_id: r.folder_id,
+    folder_path: ctx.path(r.folder_id),
+    status: contentStatus(pubs, today),
+    files: { ...files, total: (r.assets ?? []).length },
+    publications: pubs
+      .map((p) => {
+        const a = accounts.get(p.account_id);
+        return {
+          id: p.id,
+          account_id: p.account_id,
+          platform: a?.platform ?? null,
+          handle: a?.handle ?? null,
+          ref: a ? accountLabel(a) : null,
+          date: p.scheduled_date,
+          time: hhmm(p.scheduled_time),
+          posted: p.posted,
+          late: isLate(p, today),
+        };
+      })
+      .sort((a, b) => comparePubs({ ...a, platform: a.platform ?? "" }, { ...b, platform: b.platform ?? "" })),
+    url: contentUrl(origin, r.id),
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+  };
+}
+
+/** GET /api/v1/contents?folder=&status=&format=&q=&limit= */
+export async function GET(req: NextRequest) {
+  return handle(req, async () => {
+    const sp = req.nextUrl.searchParams;
+    const status = sp.get("status")?.trim().toLowerCase() || undefined;
+    if (status && !STATUSES.includes(status as ContentStatus)) {
+      throw new ApiError(400, `Statut « ${status} » inconnu. Valeurs possibles : ${STATUSES.join(", ")}.`);
+    }
+    const format: Format | undefined = sp.get("format")?.trim() ? parseFormat(sp.get("format")!) : undefined;
+    const q = sp.get("q")?.trim() || undefined;
+    const limitRaw = sp.get("limit");
+    const limit = limitRaw ? Number(limitRaw) : 50;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+      throw new ApiError(400, "« limit » doit être un entier entre 1 et 200.");
+    }
+
+    const sb = getAdminClient();
+    const [ctx, accountList] = await Promise.all([loadFolderCtx(sb), loadAccounts(sb)]);
+    let folderIds: string[] | undefined;
+    const folderRef = sp.get("folder")?.trim();
+    if (folderRef) {
+      const { folder } = await resolveFolder(sb, ctx, folderRef);
+      folderIds = [...ctx.subtree(folder.id)];
+    }
+
+    const build = (count: boolean) => {
+      let query = sb.from("contents").select(LIST_SELECT, count ? { count: "exact" } : undefined);
+      if (folderIds) query = query.in("folder_id", folderIds);
+      if (format) query = query.eq("format", format);
+      if (q) query = query.ilike("title", `%${q.replace(/[\\%_]/g, (c) => "\\" + c)}%`);
+      return query.order("created_at", { ascending: false }).order("id");
+    };
+
+    const today = todayParis();
+    const origin = appOrigin(req);
+    const accounts = new Map(accountList.map((a) => [a.id, a]));
+    let rows: Row[];
+    let total: number;
+    if (status) {
+      const all = await fetchAll<Row>((from, to) => build(false).range(from, to) as never, "liste des contenus");
+      const filtered = all.filter((r) => contentStatus(r.publications ?? [], today) === status);
+      total = filtered.length;
+      rows = filtered.slice(0, limit);
+    } else {
+      const { data, error, count } = await build(true).range(0, limit - 1);
+      if (error) throw dbFail(error, "liste des contenus");
+      rows = (data ?? []) as unknown as Row[];
+      total = count ?? rows.length;
+    }
+
+    return json({
+      contents: rows.map((r) => summarize(r, ctx, accounts, origin, today)),
+      total,
+      limit,
+    });
+  });
+}
+
+async function rollbackFolders(sb: SupabaseClient, created: Folder[]) {
+  for (const f of [...created].reverse()) {
+    await sb.from("folders").delete().eq("id", f.id);
+  }
+}
+
+/** POST /api/v1/contents { folder, create_folders?, title, format?, notes?, publications? } */
+export async function POST(req: NextRequest) {
+  return handle(req, async () => {
+    const body = await readObject(req);
+    const title = reqText(body, "title", { max: 500 });
+    const format = optFormat(body) ?? "video";
+    const notes = optText(body, "notes", { max: 100000, trim: false })?.trim() ?? "";
+    const rawPubs = body.publications ?? [];
+    if (!Array.isArray(rawPubs)) throw new ApiError(400, "« publications » doit être une liste.");
+    const inputs = rawPubs.map((p, i) => parsePubInput(p, `publication (n°${i + 1})`));
+
+    const sb = getAdminClient();
+    const [ctx, accounts] = await Promise.all([loadFolderCtx(sb), loadAccounts(sb)]);
+    const { folder, created } = await resolveFolder(sb, ctx, body.folder, {
+      create: optBool(body, "create_folders"),
+    });
+
+    let contentId: string | null = null;
+    let content: Content;
+    const warnings: string[] = [];
+    try {
+      const cands = candidatesForFolder(ctx, accounts, folder.id);
+      const scope = `dossier « ${ctx.path(folder.id)} »`;
+      const resolved = inputs.map((p) => ({ input: p, account: resolveAccountRef(ctx, cands, p.account, scope) }));
+      const seen = new Set<string>();
+      for (const r of resolved) {
+        if (seen.has(r.account.id)) {
+          throw new ApiError(400, `Deux publications visent le même compte (${accountLabel(r.account)}) : une seule par compte.`);
+        }
+        seen.add(r.account.id);
+      }
+
+      const { data, error } = await sb
+        .from("contents")
+        .insert({ folder_id: folder.id, title, format, notes })
+        .select("*")
+        .single();
+      if (error) throw dbFail(error, "création du contenu");
+      content = data as Content;
+      contentId = content.id;
+
+      if (resolved.length) {
+        const rows = resolved.map((r) => newPubRow(contentId!, r.account, r.input));
+        const { error: pe } = await sb.from("publications").insert(rows);
+        if (pe) throw dbFail(pe, "création des publications");
+        for (const r of resolved) {
+          warnings.push(
+            ...publicationWarnings({ title: r.input.title ?? "", description: r.input.description ?? "" }, r.account),
+          );
+          if (r.input.time && !r.input.date) warnings.push(`${accountLabel(r.account)} : heure sans date, la publication n'est pas programmée.`);
+        }
+      }
+    } catch (err) {
+      // Rien de partiel : on annule le contenu et les dossiers créés pour l'occasion.
+      if (contentId) await sb.from("contents").delete().eq("id", contentId);
+      if (created.length) await rollbackFolders(sb, created);
+      throw err;
+    }
+
+    const full = await loadContentFull(sb, content.id, appOrigin(req), { ctx, accounts, content });
+    return json({ ...full, created_folders: created.map((f) => ctx.path(f.id)), warnings }, 201);
+  });
+}
