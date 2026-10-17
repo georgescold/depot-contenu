@@ -296,3 +296,14 @@ $$;
 drop trigger if exists api_keys_guard on public.api_keys;
 create trigger api_keys_guard before insert or update on public.api_keys
   for each row execute function public.api_keys_guard();
+
+-- =====================================================================
+-- Archivage après publication : on libère le stockage, on garde l'historique
+-- =====================================================================
+alter table public.assets   add column if not exists archived_at timestamptz;
+alter table public.contents add column if not exists keep_files boolean not null default false;
+alter table public.contents add column if not exists files_archived_at timestamptz;
+
+-- Délai (en jours) entre la dernière publication et la suppression des fichiers ; null = jamais.
+insert into public.app_settings (key, value) values ('archive_after_days', '3'::jsonb)
+on conflict (key) do nothing;

@@ -750,7 +750,8 @@ function printContent(c) {
   const assets = expectArray(c.assets, "assets");
   out(`Fichiers (${assets.length})`);
   for (const a of assets) {
-    out(`  - [${KIND_FR[a.kind] ?? a.kind} ${a.position}] ${a.file_name} (${fmtSize(a.size_bytes)})  id ${a.id}`);
+    const archived = a.archived_at ? `  · retiré du stockage le ${String(a.archived_at).slice(0, 10)} (après publication)` : "";
+    out(`  - [${KIND_FR[a.kind] ?? a.kind} ${a.position}] ${a.file_name} (${fmtSize(a.size_bytes)})  id ${a.id}${archived}`);
     if (a.download_url) out(`      ${a.download_url}`);
   }
   const pubs = expectArray(c.publications, "publications");

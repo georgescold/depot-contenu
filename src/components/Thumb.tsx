@@ -8,12 +8,15 @@ import { cn } from "./ui";
 
 /** Image la plus représentative d'un contenu : miniature, sinon 1re slide. */
 export function coverAsset(c: Pick<ContentFull, "assets">): Asset | undefined {
-  const sorted = [...c.assets].sort((a, b) => a.position - b.position);
+  const sorted = c.assets.filter((a) => !a.archived_at).sort((a, b) => a.position - b.position);
   return sorted.find((a) => a.kind === "thumbnail") ?? sorted.find((a) => a.kind === "photo");
 }
 
 export function firstVideo(c: Pick<ContentFull, "assets">): Asset | undefined {
-  return [...c.assets].sort((a, b) => a.position - b.position).find((a) => a.kind === "video");
+  return c.assets
+    .filter((a) => !a.archived_at)
+    .sort((a, b) => a.position - b.position)
+    .find((a) => a.kind === "video");
 }
 
 export function Thumb({

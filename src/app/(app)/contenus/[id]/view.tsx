@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { PageBody, PageHeader, Splash } from "@/components/AppShell";
 import { AutoField } from "@/components/AutoField";
+import { ArchiveNotice } from "@/components/content/ArchiveNotice";
 import { AssetsSection } from "@/components/content/AssetsSection";
 import { PublicationCard } from "@/components/content/PublicationCard";
 import { SaveToDevice } from "@/components/content/SaveToDevice";
@@ -56,8 +57,9 @@ export default function ContentPage() {
     ...allAccounts.filter((a) => content.publications.some((p) => p.account_id === a.id)),
     ...allAccounts.filter((a) => !content.publications.some((p) => p.account_id === a.id)),
   ];
-  const present = new Set(content.assets.map((a) => a.kind));
-  const totalSize = content.assets.reduce((s, a) => s + (a.size_bytes || 0), 0);
+  const live = content.assets.filter((a) => !a.archived_at);
+  const present = new Set(live.map((a) => a.kind));
+  const totalSize = live.reduce((s, a) => s + (a.size_bytes || 0), 0);
 
   const remove = async () => {
     const sending = activeFor(content.id);
@@ -124,11 +126,12 @@ export default function ContentPage() {
             </div>
 
             <div>
-              <SectionTitle action={<SaveToDevice assets={content.assets} />}>
+              <SectionTitle action={<SaveToDevice assets={live} />}>
                 Fichiers
                 {totalSize > 0 && <span className="ml-2 font-normal normal-case">· {formatBytes(totalSize)}</span>}
               </SectionTitle>
               <div className="space-y-6">
+                <ArchiveNotice content={content} />
                 {kindsFor(content.format, present).map((k) => (
                   <AssetsSection key={k} content={content} kind={k} />
                 ))}

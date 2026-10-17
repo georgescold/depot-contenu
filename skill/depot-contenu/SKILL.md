@@ -115,5 +115,8 @@ depot delete <id> --yes                               # suppression définitive 
 ## Précautions
 
 - Confirmation explicite avant `delete` et `rm-file`.
+- Archivage : quand un contenu est posté sur **tous** ses comptes, l'app retire ses fichiers du stockage après un délai
+  (3 jours par défaut, réglable par le propriétaire). La fiche, les légendes et les dates restent ; `get` marque ces fichiers
+  « retiré du stockage » et ils n'ont plus de lien. Pour garder les fichiers d'un contenu, c'est dans l'app (« Garder les fichiers »).
 - Dates `AAAA-MM-JJ`, heures `HH:MM`, heure de Paris.
 - Légendes longues ou avec guillemets : passe par `description_file` (fichier UTF-8 écrit avec Write) plutôt qu'en ligne de commande.

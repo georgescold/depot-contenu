@@ -35,7 +35,12 @@ export interface Store extends Data {
   updateAccount: (id: string, patch: Partial<Pick<Account, "platform" | "handle" | "url" | "folder_id">>) => Promise<boolean>;
   deleteAccount: (id: string) => Promise<boolean>;
   createContent: (input: Pick<Content, "folder_id" | "title" | "format">) => Promise<ContentFull | null>;
-  updateContent: (id: string, patch: Partial<Pick<Content, "title" | "format" | "notes" | "folder_id">>) => Promise<boolean>;
+  updateContent: (id: string, patch: Partial<Pick<Content, "title" | "format" | "notes" | "folder_id" | "keep_files">>) => Promise<boolean>;
+  /** retire tout de suite du stockage les fichiers d'un contenu posté partout */
+  archiveNow: (contentId: string) => Promise<boolean>;
+  /** délai (jours) avant l'archivage automatique ; null = jamais ; undefined = pas encore chargé */
+  archiveAfterDays: number | null | undefined;
+  setArchiveAfterDays: (days: number | null) => Promise<boolean>;
   deleteContent: (id: string) => Promise<boolean>;
   savePublication: (contentId: string, accountId: string, patch: PubPatch) => Promise<boolean>;
   deletePublication: (contentId: string, accountId: string) => Promise<boolean>;
@@ -126,6 +131,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [online, setOnline] = useState(true);
+  const [archiveAfterDays, setArchiveDays] = useState<number | null | undefined>(undefined);
 
   const fail = useCallback(
     (e: unknown, msg = "Pas enregistré") => {
@@ -170,6 +176,9 @@ export function DataProvider({ children }: { children: ReactNode }) {
     // chargement initial + rafraîchissement au retour au premier plan, au retour du réseau et chaque minute
     // eslint-disable-next-line react-hooks/set-state-in-effect
     reload();
+    authedFetch<{ archive_after_days: number | null }>("/api/settings", { method: "POST", body: "{}" })
+      .then((r) => setArchiveDays(r.archive_after_days))
+      .catch(() => {});
     const onVisible = () => document.visibilityState === "visible" && reload();
     const onRetry = () => reload();
     const onOnline = () => {
@@ -369,6 +378,48 @@ export function DataProvider({ children }: { children: ReactNode }) {
     [data.contents, fail],
   );
 
+  const archiveNow: Store["archiveNow"] = useCallback(
+    async (contentId) => {
+      try {
+        const res = await authedFetch<{ archived_ids: string[]; archived_at: string | null; freed_bytes: number }>(
+          "/api/storage/archive",
+          { method: "POST", body: JSON.stringify({ content_id: contentId }) },
+        );
+        const ids = new Set(res.archived_ids);
+        const at = res.archived_at ?? new Date().toISOString();
+        const content = data.contents.find((c) => c.id === contentId);
+        content?.assets.filter((a) => ids.has(a.id)).forEach((a) => forgetSignedUrl(a.storage_path));
+        patchContentLocal(contentId, (c) => ({
+          ...c,
+          files_archived_at: res.archived_at ?? c.files_archived_at,
+          assets: c.assets.map((a) => (ids.has(a.id) ? { ...a, archived_at: at } : a)),
+        }));
+        return true;
+      } catch (e) {
+        fail(e, "Fichiers non supprimés");
+        return false;
+      }
+    },
+    [data.contents, fail, patchContentLocal],
+  );
+
+  const setArchiveAfterDays: Store["setArchiveAfterDays"] = useCallback(
+    async (days) => {
+      try {
+        const r = await authedFetch<{ archive_after_days: number | null }>("/api/settings", {
+          method: "POST",
+          body: JSON.stringify({ archive_after_days: days }),
+        });
+        setArchiveDays(r.archive_after_days);
+        return true;
+      } catch (e) {
+        fail(e, "Réglage non enregistré");
+        return false;
+      }
+    },
+    [fail],
+  );
+
   /* ---------------- publications ---------------- */
   const savePublication: Store["savePublication"] = useCallback(
     (contentId, accountId, patch) => {
@@ -540,14 +591,28 @@ export function DataProvider({ children }: { children: ReactNode }) {
       addAsset: tracked(addAsset),
       deleteAsset: tracked(deleteAsset),
       reorderAssets: tracked(reorderAssets),
+      archiveNow: tracked(archiveNow),
+      setArchiveAfterDays,
     }),
     [
       createFolder, updateFolder, deleteFolder, createAccount, updateAccount, deleteAccount, createContent,
       updateContent, deleteContent, savePublication, deletePublication, addAsset, deleteAsset, reorderAssets,
+      archiveNow, setArchiveAfterDays,
     ],
   );
 
-  const store: Store = { ...data, ready, error, online, index, contentById, accountById, reload, ...actions };
+  const store: Store = {
+    ...data,
+    ready,
+    error,
+    online,
+    archiveAfterDays,
+    index,
+    contentById,
+    accountById,
+    reload,
+    ...actions,
+  };
 
   return <Ctx value={store}>{children}</Ctx>;
 }

@@ -23,7 +23,7 @@ export function AssetsSection({ content, kind }: { content: ContentFull; kind: A
   const { upload } = useUploads();
   const inputRef = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
-  const assets = content.assets.filter((a) => a.kind === kind).sort((a, b) => a.position - b.position);
+  const assets = content.assets.filter((a) => a.kind === kind && !a.archived_at).sort((a, b) => a.position - b.position);
 
   const pick = () => inputRef.current?.click();
   const onFiles = (files: FileList | null) => {

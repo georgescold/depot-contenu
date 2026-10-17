@@ -34,3 +34,8 @@ export function contentStatus(
   if (pending.every((p) => !p.scheduled_date)) return posted > 0 ? "partial" : "draft";
   return posted > 0 ? "partial" : "scheduled";
 }
+
+/** Fichiers encore présents dans le stockage (hors archivés). */
+export function liveAssets<T extends { archived_at: string | null }>(assets: T[]): T[] {
+  return assets.filter((a) => !a.archived_at);
+}

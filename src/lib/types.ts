@@ -40,6 +40,10 @@ export interface Content {
   title: string;
   format: Format;
   notes: string;
+  /** protège les fichiers de l'archivage automatique */
+  keep_files: boolean;
+  /** dernière fois que des fichiers ont été retirés du stockage après publication */
+  files_archived_at: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;
@@ -71,6 +75,8 @@ export interface Asset {
   file_name: string;
   mime_type: string;
   size_bytes: number;
+  /** fichier retiré du stockage après publication (la ligne reste pour l'historique) */
+  archived_at: string | null;
   created_by: string | null;
   created_at: string;
 }

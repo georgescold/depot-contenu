@@ -27,8 +27,9 @@ export function ContentCard({ content, showPath = true }: { content: ContentFull
   const info = STATUS_INFO[status];
   const color = folderColor(index, content.folder_id);
   const next = nextPublication(content);
-  const videos = content.assets.filter((a) => a.kind === "video").length;
-  const photos = content.assets.filter((a) => a.kind === "photo").length;
+  const live = content.assets.filter((a) => !a.archived_at);
+  const videos = live.filter((a) => a.kind === "video").length;
+  const photos = live.filter((a) => a.kind === "photo").length;
 
   return (
     <Link

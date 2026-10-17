@@ -131,13 +131,16 @@ export async function serializeAssets(assets: Asset[]) {
     sortAssets(assets).map(async (a) => {
       let downloadUrl: string | null = null;
       let downloadError: string | undefined;
-      try {
-        downloadUrl = await presignGet(a.storage_path, {
-          download: a.file_name || a.storage_path.split("/").pop(),
-          expires: DOWNLOAD_TTL_SECONDS,
-        });
-      } catch (e) {
-        downloadError = e instanceof Error ? e.message : String(e);
+      // fichier retiré du stockage après publication : plus de lien (la ligne reste pour l'historique)
+      if (!a.archived_at) {
+        try {
+          downloadUrl = await presignGet(a.storage_path, {
+            download: a.file_name || a.storage_path.split("/").pop(),
+            expires: DOWNLOAD_TTL_SECONDS,
+          });
+        } catch (e) {
+          downloadError = e instanceof Error ? e.message : String(e);
+        }
       }
       return {
         id: a.id,
@@ -148,6 +151,7 @@ export async function serializeAssets(assets: Asset[]) {
         size_bytes: a.size_bytes,
         storage_path: a.storage_path,
         created_at: a.created_at,
+        archived_at: a.archived_at ?? null,
         download_url: downloadUrl,
         ...(downloadError ? { download_error: downloadError } : {}),
       };
@@ -192,6 +196,8 @@ export async function loadContentFull(
     title: content.title,
     format: content.format,
     notes: content.notes,
+    keep_files: content.keep_files ?? false,
+    files_archived_at: content.files_archived_at ?? null,
     folder_id: content.folder_id,
     folder_path: ctx.path(content.folder_id),
     status: contentStatus(pubs, today),

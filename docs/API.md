@@ -164,6 +164,11 @@ nom d'origine (`response-content-disposition` : `filename="<ASCII de secours>"` 
 
 `assets` : tri par type (`video`, `thumbnail`, `photo`, `other`) puis `position` ; `publications` : par date puis heure.
 
+**Archivage après publication.** Quand toutes les publications d'un contenu sont postées, ses fichiers lourds sont retirés
+du stockage après le délai réglé dans l'app (3 jours par défaut ; une miniature ou 1re slide de 2 Mo max est gardée).
+Les lignes restent : `archived_at` est alors renseigné et `download_url` vaut `null`. Le contenu porte `keep_files`
+(exception à l'archivage, réglée dans l'app) et `files_archived_at`.
+
 ## PATCH /api/v1/contents/:id
 
 `{ title?, format?, notes?, folder?, create_folders? }` (`folder` = déplacer). Les publications dont le compte n'est plus

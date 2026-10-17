@@ -5,8 +5,9 @@ import { useCallback, useEffect, useState } from "react";
 import { PageBody, PageHeader, signOutAndLeave } from "@/components/AppShell";
 import { useData } from "@/components/data/DataProvider";
 import { useToast } from "@/components/Toast";
-import { Button, Card, Field, IconButton, Input, Modal, Pill, SectionTitle } from "@/components/ui";
+import { Button, Card, Field, IconButton, Input, Modal, Pill, SectionTitle, Select } from "@/components/ui";
 import { apiKeyDisplayPrefix, generateApiKey, hashApiKey } from "@/lib/apikey";
+import { ARCHIVE_DELAY_CHOICES, archiveDelayLabel } from "@/lib/archive-rules";
 import { FREE_STORAGE_GB, MAX_FILE_MB } from "@/lib/constants";
 import { authedFetch } from "@/lib/client-fetch";
 import { copyText } from "@/lib/clipboard";
@@ -371,30 +372,74 @@ function ApiKeysSection() {
 /* ------------------------------------------------------------------ */
 
 function StorageSection() {
-  const { contents } = useData();
-  const used = contents.reduce((s, c) => s + c.assets.reduce((t, a) => t + (a.size_bytes || 0), 0), 0);
-  const files = contents.reduce((s, c) => s + c.assets.length, 0);
+  const { contents, archiveAfterDays, setArchiveAfterDays } = useData();
+  const [isOwner, setIsOwner] = useState(false);
+  useEffect(() => {
+    (async () => {
+      const { data: u } = await supabase().auth.getUser();
+      if (!u.user) return;
+      const { data } = await supabase().from("team_members").select("role").eq("user_id", u.user.id).maybeSingle();
+      setIsOwner(data?.role === "owner");
+    })();
+  }, []);
+
+  const all = contents.flatMap((c) => c.assets);
+  const live = all.filter((a) => !a.archived_at);
+  const archived = all.filter((a) => a.archived_at);
+  const used = live.reduce((t, a) => t + (a.size_bytes || 0), 0);
+  const freed = archived.reduce((t, a) => t + (a.size_bytes || 0), 0);
   const ratio = Math.min(1, used / FREE_STORAGE);
   return (
     <section>
       <SectionTitle>Stockage</SectionTitle>
-      <Card className="space-y-3 p-4">
-        <div className="flex items-center gap-3">
-          <HardDrive className="size-5 text-muted" />
-          <p className="flex-1 text-sm">
-            <strong>{formatBytes(used)}</strong> utilisés sur {FREE_STORAGE_GB} Go gratuits · {files} fichier{files > 1 ? "s" : ""}
-          </p>
+      <Card className="space-y-4 p-4">
+        <div className="space-y-3">
+          <div className="flex items-center gap-3">
+            <HardDrive className="size-5 text-muted" />
+            <p className="flex-1 text-sm">
+              <strong>{formatBytes(used)}</strong> utilisés sur {FREE_STORAGE_GB} Go gratuits · {live.length} fichier
+              {live.length > 1 ? "s" : ""}
+            </p>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-surface-2">
+            <div
+              className={ratio > 0.85 ? "h-full bg-danger" : "h-full bg-accent"}
+              style={{ width: `${Math.max(2, ratio * 100)}%` }}
+            />
+          </div>
+          {archived.length > 0 && (
+            <p className="text-xs text-muted">
+              {formatBytes(freed)} déjà libérés par l&apos;archivage ({archived.length} fichier{archived.length > 1 ? "s" : ""}{" "}
+              de contenus postés, gardés dans l&apos;historique).
+            </p>
+          )}
         </div>
-        <div className="h-2 overflow-hidden rounded-full bg-surface-2">
-          <div
-            className={ratio > 0.85 ? "h-full bg-danger" : "h-full bg-accent"}
-            style={{ width: `${Math.max(2, ratio * 100)}%` }}
-          />
+
+        <div className="border-t border-line pt-4">
+          <Field
+            label="Après publication sur tous les comptes, retirer les fichiers du stockage"
+            hint="Le titre, les légendes, les dates, les liens et une petite image de couverture restent dans l'historique. Sur chaque contenu, « Garder les fichiers » fait une exception."
+          >
+            <Select
+              value={archiveAfterDays === undefined ? "" : archiveAfterDays === null ? "never" : String(archiveAfterDays)}
+              disabled={!isOwner || archiveAfterDays === undefined}
+              onChange={(e) => setArchiveAfterDays(e.target.value === "never" ? null : Number(e.target.value))}
+            >
+              {archiveAfterDays === undefined && <option value="">Chargement…</option>}
+              {ARCHIVE_DELAY_CHOICES.map((d) => (
+                <option key={d} value={String(d)}>
+                  {archiveDelayLabel(d)}
+                </option>
+              ))}
+              <option value="never">{archiveDelayLabel(null)}</option>
+            </Select>
+          </Field>
+          {!isOwner && <p className="mt-1 text-xs text-muted">Seul le propriétaire peut changer ce réglage.</p>}
         </div>
+
         <p className="text-xs text-muted">
           Fichiers stockés chez Backblaze B2 : {FREE_STORAGE_GB} Go gratuits, puis environ 0,007 $ par Go et par mois.
-          Jusqu&apos;à {Math.round(MAX_FILE_MB / 1024)} Go par fichier. Supprime les fichiers des contenus déjà postés
-          pour libérer de la place.
+          Jusqu&apos;à {Math.round(MAX_FILE_MB / 1024)} Go par fichier.
         </p>
       </Card>
     </section>
