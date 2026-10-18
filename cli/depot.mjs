@@ -1107,7 +1107,9 @@ async function cmdAccount(pos, flags) {
     const res = await api("PATCH", `/accounts/${encodeURIComponent(id)}`, body);
     if (flags.json) return printJson(res);
     const a = expectObject(res.account, "account");
-    return out(`Compte modifié : ${a.ref} dans ${a.folder_path} · pour : ${a.assignee ? a.assignee.name : "personne"}`);
+    return out(
+      `Compte modifié : ${a.ref} dans ${a.folder_path} · pour : ${a.assignee ? a.assignee.name : "la personne du dossier (rien de choisi sur le compte)"}`,
+    );
   }
   if (sub === "rm") {
     onlyFlags("account", "rm", flags, ["yes", "force"]);

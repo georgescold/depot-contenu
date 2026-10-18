@@ -418,3 +418,23 @@ end $$;
 -- Dernier problème de collecte par compte (ex. « profil introuvable »), effacé quand la collecte réussit
 alter table public.accounts add column if not exists stats_error text;
 alter table public.accounts add column if not exists stats_checked_at timestamptz;
+
+-- Changement de pseudo / lien / plateforme d'un compte : ses statistiques appartenaient à l'ancien profil,
+-- on les efface (quel que soit le chemin : app, API, CLI) et on remet son état de collecte à zéro.
+create or replace function public.accounts_reset_stats_on_profile_change()
+returns trigger language plpgsql security definer set search_path = '' as $$
+begin
+  if new.platform is distinct from old.platform
+     or lower(btrim(new.handle)) is distinct from lower(btrim(old.handle))
+     or btrim(new.url) is distinct from btrim(old.url) then
+    delete from public.post_stats where account_id = new.id;
+    delete from public.account_stats_daily where account_id = new.id;
+    new.stats_error := null;
+    new.stats_checked_at := null;
+  end if;
+  return new;
+end;
+$$;
+drop trigger if exists accounts_reset_stats on public.accounts;
+create trigger accounts_reset_stats before update of platform, handle, url on public.accounts
+  for each row execute function public.accounts_reset_stats_on_profile_change();
