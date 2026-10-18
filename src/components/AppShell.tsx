@@ -1,6 +1,6 @@
 "use client";
 
-import { CalendarDays, FolderTree, Library, LogOut, Plus, RefreshCw, Settings, WifiOff } from "lucide-react";
+import { BarChart3, CalendarDays, FolderTree, Library, LogOut, Plus, RefreshCw, Settings, WifiOff } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
@@ -16,6 +16,7 @@ const NAV = [
   { href: "/", label: "Planning", icon: CalendarDays },
   { href: "/projets", label: "Projets", icon: FolderTree },
   { href: "/contenus", label: "Contenus", icon: Library },
+  { href: "/statistiques", label: "Stats", icon: BarChart3 },
   { href: "/reglages", label: "Réglages", icon: Settings },
 ] as const;
 
@@ -205,7 +206,7 @@ function ShellUI({ children }: { children: ReactNode }) {
               <Plus className="size-6" />
             </button>
           </div>
-          {NAV.slice(2).map((item) => (
+          {NAV.slice(2, 4).map((item) => (
             <TabLink key={item.href} {...item} active={isActive(pathname, item.href)} />
           ))}
         </div>
@@ -257,6 +258,22 @@ export function AppShell({ children }: { children: ReactNode }) {
   );
 }
 
+/** Accès aux Réglages sur téléphone (la barre d'onglets n'a pas la place). */
+function SettingsLink() {
+  const pathname = usePathname();
+  if (pathname.startsWith("/reglages")) return null;
+  return (
+    <Link
+      href="/reglages"
+      aria-label="Réglages"
+      title="Réglages"
+      className="inline-flex size-9 items-center justify-center rounded-xl text-muted transition hover:bg-surface-2 hover:text-ink md:hidden"
+    >
+      <Settings className="size-5" />
+    </Link>
+  );
+}
+
 /** En-tête de page commun. */
 export function PageHeader({
   title,
@@ -274,7 +291,10 @@ export function PageHeader({
       <div className="mx-auto max-w-6xl px-4 pt-4 pb-3 md:px-8 md:pt-8 md:pb-4">
         <div className="flex items-start justify-between gap-3">
           <h1 className="line-clamp-2 min-w-0 text-xl font-semibold tracking-tight break-words md:text-2xl">{title}</h1>
-          {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
+          <div className="flex shrink-0 items-center gap-2">
+            {actions}
+            <SettingsLink />
+          </div>
         </div>
         {subtitle && <div className="mt-0.5 text-sm text-muted">{subtitle}</div>}
         {children && <div className="mt-3">{children}</div>}

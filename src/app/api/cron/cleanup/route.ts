@@ -1,5 +1,6 @@
 import { connection } from "next/server";
 import { runAutoArchive } from "@/lib/archive";
+import { ingestPendingRuns } from "@/lib/stats-collect";
 import { deleteObjects, listObjectsDetailed } from "@/lib/b2";
 import { jsonError } from "@/lib/server-auth";
 import { getAdminClient } from "@/lib/supabase/admin";
@@ -22,6 +23,8 @@ export async function GET(req: Request) {
   try {
     const admin = getAdminClient();
     const archive = await runAutoArchive(admin);
+    // filet de sécurité : collectes de statistiques terminées dont le webhook n'est pas arrivé
+    const statsPending = await ingestPendingRuns(admin).catch((e) => ({ erreur: String(e) }));
     const known = new Set<string>();
     for (let from = 0; ; from += 1000) {
       const { data, error } = await admin
@@ -42,6 +45,7 @@ export async function GET(req: Request) {
     return Response.json({
       ok: true,
       archive,
+      statsPending,
       orphans: { objects: objects.length, assets: known.size, removed, freed_bytes: freed },
     });
   } catch (e) {

@@ -76,9 +76,13 @@ curl -s "$DEPOT_API_URL/api/v1/me" -H "Authorization: Bearer $DEPOT_API_KEY"
 { "key": { "id": "…", "name": "Mon PC", "prefix": "dpc_a028Hf", "created_at": "…", "last_used_at": "…" },
   "app": { "url": "http://localhost:3000", "max_file_mb": 4096, "multipart_threshold_bytes": 104857600,
            "max_files_per_request": 100, "today": "2026-10-17",
-           "archive_after_days": 3, "archive_after_label": "3 jours après" } }
+           "archive_after_days": 3, "archive_after_label": "3 jours après",
+           "apify_credit_remaining_usd": 14.86, "apify_keys": 3, "apify_keys_ok": 3 } }
 ```
 
+`apify_credit_remaining_usd` : crédit Apify restant ce mois-ci, toutes clés confondues (collecte des statistiques) ;
+`apify_keys` / `apify_keys_ok` : nombre de clés configurées / valides. Les clés elles-mêmes ne sont jamais renvoyées
+(`apify_credit_error` si Apify ne répond pas en 8 s). `?credit=false` saute cet appel (le CLI le fait avant un envoi).
 `archive_after_days` : jours entre la dernière publication et le retrait des fichiers (`null` = jamais). **Lecture seule** :
 le réglage ne se change que dans l'app.
 
@@ -270,7 +274,9 @@ nom d'origine (`response-content-disposition` : `filename="<ASCII de secours>"` 
   "publications": [ { "id": "…", "account_id": "…", "account": { "id": "…", "platform": "instagram", "handle": "@projet", "url": "…", "ref": "instagram:@projet" },
                       "date": "2026-10-20", "time": "18:00", "title": "", "description": "…", "posted": false,
                       "posted_at": null, "post_url": "", "late": false,
-                      "assignee": { "id": "…", "name": "Enzo", "source": "content" }, "updated_at": "…" } ],
+                      "assignee": { "id": "…", "name": "Enzo", "source": "content" }, "updated_at": "…",
+                      "stats": { "post_stat_id": "…", "url": "https://www.tiktok.com/@x/video/…", "views": 1200000, "likes": 9974,
+                                 "comments": 4344, "shares": 965, "saves": 1023, "engagement": 0.0136, "updated_at": "…" } } ],
   "available_accounts": [ { "id": "…", "folder_path": "Projet", "platform": "instagram", "handle": "@projet", "ref": "instagram:@projet", "assignee": null, "...": "…" } ] }
 ```
 
@@ -419,6 +425,76 @@ curl -s -X POST "$DEPOT_API_URL/api/v1/contents/<id>/assets" -H "Authorization: 
 
 Supprime la ligne, puis l'objet B2 au mieux → `{ deleted, id, content_id, file_name, warnings }`.
 
+## GET /api/v1/stats
+
+Statistiques des posts, **en lecture seule**, relevées chaque nuit vers minuit (heure de Paris) sur les 12 derniers posts de
+chaque compte TikTok, Instagram et YouTube. Instagram et YouTube ne donnent ni partages ni enregistrements (`null`).
+Aucune route ne lance de collecte : c'est le bouton « Actualiser » de l'app.
+
+Paramètres :
+
+- `assignee` : nom, id ou `none`, comparé à la personne effective du **compte** (la sienne, sinon celle du dossier le plus proche) ;
+- `folder` : comptes rangés dans ce dossier ou ses sous-dossiers ; `account` : id, plateforme (tous ses comptes) ou handle ;
+  `platform` : `tiktok`, `instagram` ou `youtube` ;
+- période sur le jour de publication (Paris) : `from` / `to` (`AAAA-MM-JJ`), **ou** `period=7|30|90|all` (30 par défaut ;
+  N = les N derniers jours, aujourd'hui compris) ;
+- `sort=recent|views|likes|engagement` (recent par défaut) ; `limit` 50 par défaut, 200 max (ne limite que `posts`).
+
+Engagement = (likes + commentaires + partages + enregistrements) / vues ; `null` sans vues. Les totaux portent sur tous
+les posts filtrés (pas seulement ceux affichés) ; une métrique jamais fournie reste `null`.
+
+```bash
+curl -s -G "$DEPOT_API_URL/api/v1/stats" -H "Authorization: Bearer $DEPOT_API_KEY" \
+  --data-urlencode "assignee=Enzo" --data-urlencode "platform=tiktok" --data-urlencode "sort=views" --data-urlencode "limit=5"
+```
+
+```json
+{ "today": "2026-10-18",
+  "filters": { "from": "2026-09-19", "to": "2026-10-18", "period": "30", "sort": "views", "limit": 5,
+               "assignee": { "id": "…", "name": "Enzo" }, "folder": null, "account": null, "platform": "tiktok" },
+  "totals": { "posts": 12, "views": 5938500, "likes": 150600, "comments": 29700, "shares": 11207, "saves": 13794, "engagement": 0.035 },
+  "accounts": [ { "account": { "id": "…", "ref": "tiktok:@x", "platform": "tiktok", "handle": "@x", "folder_path": "Projet",
+                                "assignee": { "id": "…", "name": "Enzo", "source": "folder", "folder_id": "…" } },
+                   "followers": 96300000, "followers_day": "2026-10-18", "followers_delta_7d": null,
+                   "posts": 12, "views": 5938500, "avg_views": 494875, "likes": 150600, "engagement": 0.035,
+                   "last_collected_at": "2026-10-18T11:19:07Z" } ],
+  "posts": [ { "id": "…", "platform": "tiktok", "external_id": "7694797676306615583", "kind": "video",
+               "url": "https://www.tiktok.com/@x/video/7694797676306615583", "caption": "… (300 car. max)",
+               "published_at": "…", "published_day": "2026-10-10", "thumbnail_url": "…",
+               "views": 1200000, "likes": 9974, "comments": 4344, "shares": 965, "saves": 1023, "engagement": 0.0136,
+               "updated_at": "…", "account": { "id": "…", "ref": "tiktok:@x", "platform": "tiktok", "handle": "@x", "folder_path": "Projet" },
+               "assignee": { "id": "…", "name": "Enzo", "source": "folder" },
+               "content": { "id": "…", "title": "…", "publication_id": "…", "url": "…/contenus/…" } } ],
+  "posts_total": 12,
+  "last_collection": { "at": "2026-10-18T11:19:29Z", "platforms": [ { "platform": "tiktok", "status": "INGESTED", "at": "…" } ],
+                       "next_expected_at": "2026-10-18T23:00:00Z", "next_label": "vers minuit (heure de Paris), chaque nuit" },
+  "notes": ["…"] }
+```
+
+- `accounts[]` : comptes TikTok / Instagram / YouTube concernés, même sans post sur la période ; `followers` = dernier relevé,
+  `followers_delta_7d` = écart avec le relevé d'au moins 7 jours plus tôt (`null` sans historique suffisant).
+- `posts[].content` : contenu de l'app relié au post (par `publication_id`, ou par le « lien du post » d'une publication du même
+  compte, via `postIdFromUrl`), sinon `null`. `posts[].assignee` = personne effective du compte.
+
+## GET /api/v1/stats/posts/:id
+
+Un post et son historique jour par jour. `:id` = id du post (`posts[].id`), ou **lien du post encodé** (TikTok, Instagram,
+YouTube ; les paramètres comme `?lang=fr` sont ignorés). 404 si le post n'a pas été relevé.
+
+```bash
+curl -s "$DEPOT_API_URL/api/v1/stats/posts/$(node -e 'console.log(encodeURIComponent(process.argv[1]))' 'https://www.tiktok.com/@x/video/7694797676306615583')" \
+  -H "Authorization: Bearer $DEPOT_API_KEY"
+```
+
+```json
+{ "post": { "...": "même forme que posts[] de /stats", "caption_full": "…" },
+  "history": [ { "day": "2026-10-18", "views": 1200000, "likes": 9974, "comments": 4344, "shares": 965, "saves": 1023,
+                 "engagement": 0.0136, "views_delta": null } ],
+  "first_seen_at": "…", "last_collection": { "...": "…" } }
+```
+
+Dans `GET /api/v1/contents/:id`, chaque publication porte `stats` (dernières métriques du post relié et `updated_at`), ou `null`.
+
 ## GET /api/v1/calendar
 
 `?from=&to=&folder=&account=&assignee=&include_posted=` : par défaut d'aujourd'hui (Paris) à +30 jours, non postées
@@ -446,7 +522,7 @@ curl -s -G "$DEPOT_API_URL/api/v1/calendar" -H "Authorization: Bearer $DEPOT_API
 
 ---
 
-## CLI `cli/depot.mjs` (version 2.2.0)
+## CLI `cli/depot.mjs` (version 2.3.0)
 
 Zéro dépendance, Node ≥ 20. Config : `DEPOT_API_URL` / `DEPOT_API_KEY`, sinon `~/.depot-contenu.json`
 (`{ "url", "key" }`, écrit par `config`). La clé du fichier n'est envoyée qu'à l'URL du fichier : si `DEPOT_API_URL`
@@ -482,11 +558,17 @@ node cli/depot.mjs account rm <accountId> --yes [--force]
 node cli/depot.mjs people rename Enzo "Enzo B."  ·  people color Enzo "#22c55e"  ·  people rm Enzo --yes
 node cli/depot.mjs keep-files <id> [--off]
 node cli/depot.mjs archive <id> --yes
+node cli/depot.mjs stats [--assignee Enzo|none] [--folder …] [--account …] [--platform tiktok|instagram|youtube] \
+                         [--period 7|30|90|all | --from AAAA-MM-JJ --to AAAA-MM-JJ] [--sort recent|views|likes|engagement] [--limit 50]
+node cli/depot.mjs stats post <id|lien du post>
 ```
 
 - Suppressions (`delete`, `folder rm`, `account rm`, `people rm`) et `archive` : `--yes` obligatoire. Sans lui, le CLI
   interroge l'API en `dry_run` et explique ce qui serait supprimé (code 2) ; `--force` accepte de perdre des publications
-  non postées. `me` affiche le délai d'archivage (lecture seule).
+  non postées. `me` affiche le délai d'archivage (lecture seule) et le crédit Apify restant.
+- `stats` : totaux, tableau par compte (abonnés, variation sur 7 jours, vues, moyenne, engagement) et posts (métriques,
+  légende, contenu relié, lien) ; `stats post` : détail et évolution jour par jour ; `get` affiche les stats de chaque
+  publication reliée. Lecture seule : aucune commande ne lance de collecte.
 - `upload` : arguments triés en ordre naturel ; un dossier ajoute tous ses fichiers (sauf fichiers cachés et
   `Thumbs.db` / `desktop.ini`) ; `chemin:type` fixe le type d'un fichier ; `--kind` s'applique aux autres. Fichiers de
   0 octet refusés.

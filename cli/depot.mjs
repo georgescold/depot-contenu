@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 
-const VERSION = "2.2.0";
+const VERSION = "2.3.0";
 
 if (Number(process.versions.node.split(".")[0]) < 20) {
   process.stderr.write(`Erreur : Node.js ${process.versions.node} détecté, ce CLI demande Node 20 ou plus récent (https://nodejs.org).\n`);
@@ -67,6 +67,7 @@ const SPECS = {
   "set-kind": { args: [2, 2], flags: [] },
   delete: { args: [1, 1], flags: ["yes"] },
   "keep-files": { args: [1, 1], flags: ["off"] },
+  stats: { args: [0, 2], flags: ["assignee", "folder", "account", "platform", "period", "from", "to", "sort", "limit"] },
   archive: { args: [1, 1], flags: ["yes"] },
 };
 const GLOBAL_FLAGS = ["json", "help"];
@@ -92,6 +93,7 @@ const USAGE = {
   delete: `delete <contentId> --yes`,
   "keep-files": `keep-files <contentId> [--off]`,
   archive: `archive <contentId> --yes`,
+  stats: `stats [--assignee <personne>|none] [--folder …] [--account …] [--platform tiktok|instagram|youtube] [--period 7|30|90|all | --from AAAA-MM-JJ --to AAAA-MM-JJ] [--sort recent|views|likes|engagement] [--limit 50]  |  stats post <id|lien>`,
 };
 
 /* ------------------------------------------------------------------ */
@@ -439,7 +441,7 @@ async function api(method, route, body, query) {
 }
 
 async function limits() {
-  const me = await api("GET", "/me");
+  const me = await api("GET", "/me", undefined, { credit: "false" });
   const app = expectObject(me.app, "app");
   if (typeof app.max_file_mb !== "number") throw new CliError("Réponse inattendue de /me : « max_file_mb » manquant. L'app est-elle à jour ?");
   return { maxBytes: app.max_file_mb * 1024 * 1024, maxMb: app.max_file_mb };
@@ -782,6 +784,7 @@ function printContent(c) {
     if (p.title) out(`      titre : ${oneLine(p.title, 120)}`);
     if (p.description) out(`      description : ${oneLine(p.description, 160)}`);
     if (p.post_url) out(`      lien : ${p.post_url}`);
+    if (p.stats) out(`      stats : ${metricsLine(p.stats)} (relevé le ${when(p.stats.updated_at)})`);
   }
   if (Array.isArray(c.available_accounts) && c.available_accounts.length) {
     out(`Comptes utilisables : ${c.available_accounts.map((a) => (a.assignee ? `${a.ref} (${a.assignee.name})` : a.ref)).join(", ")}`);
@@ -833,6 +836,11 @@ Contenus
   ${USAGE.delete}
   ${USAGE["keep-files"]}                    Garde les fichiers après publication (--off : archivage normal)
   ${USAGE.archive}                          Retire tout de suite les fichiers lourds d'un contenu posté partout
+
+Statistiques (relevées chaque nuit, lecture seule)
+  stats [--assignee …] [--folder …] [--account …] [--platform …] [--period 7|30|90|all | --from … --to …]
+        [--sort recent|views|likes|engagement] [--limit 50]   Totaux, comptes (abonnés, 7 j) et posts
+  stats post <id|lien>                       Détail d'un post et évolution jour par jour
 
 Calendrier
   ${USAGE.schedule}
@@ -911,6 +919,13 @@ async function cmdMe(flags) {
   out(`Limite : ${app.max_file_mb} Mo par fichier · envoi en plusieurs parties au-delà de ${fmtSize(app.multipart_threshold_bytes)} · CLI ${VERSION}`);
   if (app.archive_after_label !== undefined) {
     out(`Archivage des fichiers après publication : ${app.archive_after_label} (réglable seulement dans l'app, Réglages)`);
+  }
+  if (app.apify_keys !== undefined) {
+    out(
+      app.apify_credit_remaining_usd === null
+        ? `Crédit Apify (statistiques) : indisponible${app.apify_credit_error ? ` (${app.apify_credit_error})` : ""}`
+        : `Crédit Apify (statistiques) : ${app.apify_credit_remaining_usd.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} $ restants ce mois-ci (${app.apify_keys_ok}/${app.apify_keys} clé(s) valide(s))`,
+    );
   }
 }
 
@@ -1525,6 +1540,130 @@ async function cmdArchive(pos, flags) {
   );
 }
 
+/* ---------- Statistiques ---------- */
+
+const NUM_FULL = new Intl.NumberFormat("fr-FR");
+const NUM_COMPACT = new Intl.NumberFormat("fr-FR", { notation: "compact", maximumFractionDigits: 1 });
+
+/** 1 284 → « 1 284 », 12 900 000 → « 12,9 M » ; null → « – ». */
+function num(n) {
+  if (n === null || n === undefined) return "–";
+  return Math.abs(n) < 10_000 ? NUM_FULL.format(n) : NUM_COMPACT.format(n);
+}
+
+function signed(n) {
+  if (n === null || n === undefined) return "–";
+  return n > 0 ? `+${num(n)}` : n < 0 ? `−${num(-n)}` : "0";
+}
+
+function pct(r) {
+  if (r === null || r === undefined) return "–";
+  return `${(r * 100).toLocaleString("fr-FR", { maximumFractionDigits: r < 0.1 ? 1 : 0 })} %`;
+}
+
+function when(iso) {
+  if (!iso) return "–";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  return new Intl.DateTimeFormat("fr-FR", { timeZone: "Europe/Paris", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }).format(d);
+}
+
+/** « 13,5 k vues · 205 likes · … » (les métriques inconnues s'affichent « – »). */
+function metricsLine(m) {
+  return (
+    `${num(m.views)} vues · ${num(m.likes)} likes · ${num(m.comments)} comm. · ${num(m.shares)} partages · ` +
+    `${num(m.saves)} enreg. · engagement ${pct(m.engagement)}`
+  );
+}
+
+function table(rows) {
+  const widths = rows[0].map((_, i) => Math.max(...rows.map((r) => String(r[i]).length)));
+  return rows.map((r) => "  " + r.map((c, i) => String(c).padEnd(widths[i])).join("  ").trimEnd());
+}
+
+async function cmdStats(pos, flags) {
+  if (pos[0] === "post") {
+    onlyFlags("stats", "post", flags, []);
+    if (!pos[1] || pos.length > 2) throw new CliError(usage("stats"), { code: 2 });
+    return cmdStatsPost(pos[1], flags);
+  }
+  if (pos.length) throw new CliError(`Argument inattendu : « ${pos[0]} ».\n${usage("stats")}`, { code: 2 });
+  if (flags.period !== undefined && (flags.from !== undefined || flags.to !== undefined)) {
+    throw new CliError("Choisis --period, ou --from / --to, pas les deux.", { code: 2 });
+  }
+  const res = await api("GET", "/stats", undefined, {
+    assignee: str(flags.assignee, "assignee"),
+    folder: str(flags.folder, "folder"),
+    account: str(flags.account, "account"),
+    platform: str(flags.platform, "platform"),
+    period: str(flags.period, "period"),
+    from: str(flags.from, "from"),
+    to: str(flags.to, "to"),
+    sort: str(flags.sort, "sort"),
+    limit: str(flags.limit, "limit"),
+  });
+  const accounts = expectArray(res.accounts, "accounts");
+  const posts = expectArray(res.posts, "posts");
+  if (flags.json) return printJson(res);
+
+  const f = res.filters ?? {};
+  const range = f.period === "all" ? "toute la période" : f.period ? `${f.period} derniers jours (du ${f.from} au ${f.to})` : `du ${f.from ?? "début"} au ${f.to ?? "aujourd'hui"}`;
+  const who = f.assignee ? ` · pour ${f.assignee === "none" ? "personne (comptes non attribués)" : f.assignee.name}` : "";
+  out(`Statistiques · ${range}${who} · tri : ${f.sort}`);
+  const t = res.totals;
+  out(`Totaux : ${t.posts} post(s) · ${metricsLine(t)}`);
+
+  if (accounts.length) {
+    out("\nComptes");
+    const rows = [["compte", "abonnés", "7 j", "posts", "vues", "moy./post", "engagement", "pour", "dossier"]];
+    for (const a of accounts) {
+      rows.push([
+        a.account.ref,
+        num(a.followers),
+        signed(a.followers_delta_7d),
+        a.posts,
+        num(a.views),
+        num(a.avg_views),
+        pct(a.engagement),
+        a.account.assignee?.name ?? "–",
+        a.account.folder_path,
+      ]);
+    }
+    for (const l of table(rows)) out(l);
+  } else out("\nAucun compte suivi pour ces filtres.");
+
+  out(`\nPosts (${posts.length} sur ${res.posts_total})`);
+  for (const p of posts) {
+    out(`  ${p.published_day ?? "?"}  ${p.account?.ref ?? "?"}  ${p.kind || ""}  ·  ${metricsLine(p)}`);
+    if (p.caption) out(`      « ${oneLine(p.caption, 110)} »`);
+    if (p.content) out(`      contenu : « ${p.content.title} »  ${p.content.url}`);
+    if (p.url) out(`      ${p.url}`);
+  }
+  const lc = res.last_collection ?? {};
+  out(`\nDernier relevé : ${when(lc.at)} · prochain : ${lc.next_label ?? "vers minuit"}`);
+  for (const n of Array.isArray(res.notes) ? res.notes : []) out(`(${n})`);
+}
+
+async function cmdStatsPost(ref, flags) {
+  const res = await api("GET", `/stats/posts/${encodeURIComponent(ref)}`);
+  if (flags.json) return printJson(res);
+  const p = expectObject(res.post, "post");
+  const history = expectArray(res.history, "history");
+  out(`${p.account?.ref ?? "?"} · ${p.kind || "post"} · publié le ${p.published_day ?? "?"}${p.assignee ? ` · pour ${p.assignee.name}` : ""}`);
+  if (p.caption_full || p.caption) out(`  « ${oneLine(p.caption_full || p.caption, 200)} »`);
+  if (p.url) out(`  ${p.url}`);
+  out(`  ${metricsLine(p)}`);
+  out(`  relevé le ${when(p.updated_at)} · id ${p.id}`);
+  if (p.content) out(`  contenu de l'app : « ${p.content.title} »  ${p.content.url}`);
+  out(`\nÉvolution jour par jour (${history.length} relevé(s))`);
+  if (history.length) {
+    const rows = [["jour", "vues", "évol.", "likes", "comm.", "partages", "enreg.", "engagement"]];
+    for (const h of history) rows.push([h.day, num(h.views), signed(h.views_delta), num(h.likes), num(h.comments), num(h.shares), num(h.saves), pct(h.engagement)]);
+    for (const l of table(rows)) out(l);
+  }
+  out(`\nDernier relevé : ${when(res.last_collection?.at)} · prochain : ${res.last_collection?.next_label ?? "vers minuit"}`);
+}
+
 async function cmdRmFile(pos, flags) {
   const res = await api("DELETE", `/assets/${encodeURIComponent(pos[0])}`);
   if (flags.json) return printJson(res);
@@ -1579,6 +1718,7 @@ const HANDLERS = {
   folder: cmdFolder,
   "keep-files": cmdKeepFiles,
   archive: cmdArchive,
+  stats: cmdStats,
 };
 
 async function main() {

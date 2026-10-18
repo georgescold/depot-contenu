@@ -7,6 +7,7 @@ import type { Account, Asset, AssetKind, Content, Folder, Publication } from "@/
 import { effectiveAssignee } from "@/lib/assignee";
 import { ApiError, dbFail } from "./errors";
 import { effectiveJson, loadPeople, peopleMap, personJson, type PeopleMap } from "./people";
+import { statsForPublications } from "./stats";
 import {
   accountLabel,
   candidatesForFolder,
@@ -220,10 +221,12 @@ export async function loadContentFull(
   const today = todayParis();
   const pubs = (pubsRes.data ?? []) as Publication[];
   const byId = new Map(accounts.map((a) => [a.id, a]));
+  // Statistiques relevées du post publié (par le lien du post ou la publication reliée), sinon null.
+  const stats = await statsForPublications(sb, pubs, byId);
   const publications = pubs
     .map((p) => {
       const account = byId.get(p.account_id);
-      return serializePublication(p, account, today, pubAssignee(ctx, people, content, account));
+      return { ...serializePublication(p, account, today, pubAssignee(ctx, people, content, account)), stats: stats.get(p.id) ?? null };
     })
     .sort((a, b) => comparePubs({ ...a, platform: a.account?.platform }, { ...b, platform: b.account?.platform }));
 

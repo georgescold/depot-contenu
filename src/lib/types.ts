@@ -42,6 +42,9 @@ export interface Account {
   position: number;
   /** personne qui poste sur ce compte (par défaut) */
   assignee_id: string | null;
+  /** dernier problème de collecte des statistiques (ex. profil introuvable), null si tout va bien */
+  stats_error?: string | null;
+  stats_checked_at?: string | null;
   created_at: string;
 }
 
@@ -116,3 +119,31 @@ export type ContentFull = Content & {
   publications: Publication[];
   assets: Asset[];
 };
+
+/** Statistiques d'un post (collectées chaque nuit via Apify ; valeurs cumulées à la dernière collecte). */
+export interface PostStat {
+  id: string;
+  account_id: string;
+  platform: Platform;
+  external_id: string;
+  url: string;
+  caption: string;
+  kind: string;
+  published_at: string | null;
+  thumbnail_url: string;
+  views: number | null;
+  likes: number | null;
+  comments: number | null;
+  shares: number | null;
+  saves: number | null;
+  publication_id: string | null;
+  first_seen_at: string;
+  updated_at: string;
+}
+
+export interface AccountStatsDay {
+  account_id: string;
+  day: string;
+  followers: number | null;
+  posts_count: number | null;
+}

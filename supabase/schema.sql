@@ -333,3 +333,88 @@ alter table public.people enable row level security;
 drop policy if exists team_all on public.people;
 create policy team_all on public.people for all to authenticated
   using (public.is_team_member()) with check (public.is_team_member());
+
+-- =====================================================================
+-- Statistiques des posts (collecte quotidienne via Apify)
+-- Écriture : serveur uniquement (clé service). Lecture : membres de l'équipe.
+-- =====================================================================
+create table if not exists public.post_stats (
+  id             uuid primary key default gen_random_uuid(),
+  account_id     uuid not null references public.accounts(id) on delete cascade,
+  platform       text not null,
+  external_id    text not null,          -- id TikTok / shortCode Instagram / id YouTube
+  url            text not null default '',
+  caption        text not null default '',
+  kind           text not null default '', -- video, short, reel, carousel, photo
+  published_at   timestamptz,
+  thumbnail_url  text not null default '',
+  views          bigint,
+  likes          bigint,
+  comments       bigint,
+  shares         bigint,
+  saves          bigint,
+  publication_id uuid references public.publications(id) on delete set null,
+  first_seen_at  timestamptz not null default now(),
+  updated_at     timestamptz not null default now(),
+  unique (account_id, external_id)
+);
+create index if not exists post_stats_account_idx on public.post_stats(account_id, published_at desc);
+create index if not exists post_stats_publication_idx on public.post_stats(publication_id);
+
+-- Historique jour par jour (une ligne par post et par jour de collecte, heure de Paris)
+create table if not exists public.post_stats_daily (
+  post_stat_id uuid not null references public.post_stats(id) on delete cascade,
+  day          date not null,
+  views        bigint,
+  likes        bigint,
+  comments     bigint,
+  shares       bigint,
+  saves        bigint,
+  primary key (post_stat_id, day)
+);
+
+create table if not exists public.account_stats_daily (
+  account_id  uuid not null references public.accounts(id) on delete cascade,
+  day         date not null,
+  followers   bigint,
+  posts_count bigint,
+  primary key (account_id, day)
+);
+
+-- Journal des collectes (quelle clé Apify, coût, résultat) ; la clé elle-même n'est jamais stockée
+create table if not exists public.apify_runs (
+  id            uuid primary key default gen_random_uuid(),
+  apify_run_id  text unique,
+  platform      text not null,
+  actor         text not null,
+  token_index   int  not null,
+  inputs        jsonb not null default '{}'::jsonb,  -- valeur envoyée au scraper -> account_id
+  status        text not null default 'RUNNING',     -- RUNNING, SUCCEEDED, FAILED, ABORTED, TIMED-OUT, INGESTED
+  trigger       text not null default 'cron',        -- cron, manual
+  items         int,
+  posts         int,
+  cost_usd      numeric,
+  error         text,
+  started_at    timestamptz not null default now(),
+  finished_at   timestamptz,
+  ingested_at   timestamptz
+);
+create index if not exists apify_runs_started_idx on public.apify_runs(started_at desc);
+
+grant select on public.post_stats, public.post_stats_daily, public.account_stats_daily, public.apify_runs to authenticated;
+grant all on public.post_stats, public.post_stats_daily, public.account_stats_daily, public.apify_runs to service_role;
+revoke all on public.post_stats, public.post_stats_daily, public.account_stats_daily, public.apify_runs from anon;
+
+do $$
+declare t text;
+begin
+  foreach t in array array['post_stats','post_stats_daily','account_stats_daily','apify_runs'] loop
+    execute format('alter table public.%I enable row level security', t);
+    execute format('drop policy if exists team_read on public.%I', t);
+    execute format('create policy team_read on public.%I for select to authenticated using (public.is_team_member())', t);
+  end loop;
+end $$;
+
+-- Dernier problème de collecte par compte (ex. « profil introuvable »), effacé quand la collecte réussit
+alter table public.accounts add column if not exists stats_error text;
+alter table public.accounts add column if not exists stats_checked_at timestamptz;

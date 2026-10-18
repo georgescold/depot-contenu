@@ -9,6 +9,7 @@ import { dateTimeLabel } from "@/lib/format";
 import { isLate } from "@/lib/status";
 import type { Account, ContentFull, Publication } from "@/lib/types";
 import { AutoField } from "../AutoField";
+import { PostStatsLine } from "./PostStatsLine";
 import { useData } from "../data/DataProvider";
 import { useToast } from "../Toast";
 import { Button, cn, IconButton, Input, PlatformBadge, PostedCheck, Select } from "../ui";
@@ -201,13 +202,16 @@ export function PublicationCard({
           </div>
         </div>
 
+        {(account.platform === "tiktok" || account.platform === "instagram" || account.platform === "youtube") &&
+          (pub.post_url || pub.posted) && <PostStatsLine account={account} pub={pub} />}
+
         {pub.posted && (
           <div className="flex items-center gap-2">
             <AutoField
               type="url"
               value={pub.post_url}
               onCommit={(v) => save({ post_url: v.trim() })}
-              placeholder="Lien du post (facultatif)"
+              placeholder="Lien du post (pour suivre ses statistiques)"
               className="h-9"
             />
             {/^https?:\/\//i.test(pub.post_url) && (

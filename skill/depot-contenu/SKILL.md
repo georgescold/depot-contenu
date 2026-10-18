@@ -1,6 +1,6 @@
 ---
 name: depot-contenu
-description: Range des vidéos, reels, carrousels, slides, miniatures et légendes dans l'app « Dépôt contenu » (drive/CRM des contenus à poster) et les programme dans son calendrier de publication, via son CLI. À utiliser quand l'utilisateur dit « envoie / balance / range / mets / dépose … dans le dépôt », « … dans l'angle X / le projet Y », « dépose cette vidéo / mon reel / mon carrousel / mes slides », « programme ce post », « planifie la publication de… », « cale ce reel mardi 18 h », « ajoute au calendrier de publication / au calendrier éditorial / au planning de publication », « qu'est-ce que je dois poster aujourd'hui / cette semaine », « qu'est-ce qu'Enzo doit poster aujourd'hui / cette semaine », « les vidéos de Loys », « attribue … à Enzo », « c'est pour Loys », « supprime le dossier / l'angle X », « déplace l'angle X dans le projet Y », « supprime le compte », « renomme Enzo en … », « garde les fichiers de … », « libère la place / supprime les fichiers de … », « qu'est-ce qui est en retard », « marque comme posté », « j'ai publié le post », « crée l'angle / le sous-projet », « ajoute le compte Instagram du projet », ou cite « Dépôt contenu ». NE PAS utiliser pour un dépôt git (repo, « depot » au sens git, commit, push git, GitHub).
+description: Range des vidéos, reels, carrousels, slides, miniatures et légendes dans l'app « Dépôt contenu » (drive/CRM des contenus à poster) et les programme dans son calendrier de publication, via son CLI. À utiliser quand l'utilisateur dit « envoie / balance / range / mets / dépose … dans le dépôt », « … dans l'angle X / le projet Y », « dépose cette vidéo / mon reel / mon carrousel / mes slides », « programme ce post », « planifie la publication de… », « cale ce reel mardi 18 h », « ajoute au calendrier de publication / au calendrier éditorial / au planning de publication », « qu'est-ce que je dois poster aujourd'hui / cette semaine », « qu'est-ce qu'Enzo doit poster aujourd'hui / cette semaine », « les vidéos de Loys », « attribue … à Enzo », « c'est pour Loys », « supprime le dossier / l'angle X », « déplace l'angle X dans le projet Y », « supprime le compte », « renomme Enzo en … », « garde les fichiers de … », « libère la place / supprime les fichiers de … », « stats », « statistiques », « combien de vues », « performances », « quel post a le mieux marché », « les chiffres d'Enzo », « abonnés gagnés cette semaine », « qu'est-ce qui est en retard », « marque comme posté », « j'ai publié le post », « crée l'angle / le sous-projet », « ajoute le compte Instagram du projet », ou cite « Dépôt contenu ». NE PAS utiliser pour un dépôt git (repo, « depot » au sens git, commit, push git, GitHub).
 ---
 
 # Dépôt contenu
@@ -123,6 +123,20 @@ depot archive <id> --yes                                # « libère la place »
 - **L'équipe, les clés API et les réglages** (dont le délai d'archivage, affiché par `depot me`) **ne se gèrent que dans l'app** :
   aucune commande ne les modifie. Si l'utilisateur le demande, renvoie-le vers l'app (Réglages).
 
+## Statistiques (lecture seule)
+
+```bash
+depot stats [--assignee Enzo] [--platform tiktok] [--period 7|30|90|all | --from … --to …] [--sort views|likes|engagement|recent] [--limit 5] --json
+depot stats post <id|lien du post> --json            # détail d'un post + évolution jour par jour
+```
+
+- Périodes relatives (« cette semaine », « ce mois-ci ») : calcule `--from` / `--to` depuis `app.today` (`depot me`).
+- Personne citée → `--assignee` ; « le dernier reel d'Enzo » → `--assignee Enzo --sort recent --limit 1` ;
+  « ce qui a le mieux marché » → `--sort views` (ou `engagement`). Abonnés gagnés : `accounts[].followers_delta_7d`.
+- Donne toujours la date du dernier relevé (`last_collection.at`). Relevé chaque nuit vers minuit, sur les 12 derniers posts
+  de chaque compte ; Instagram et YouTube ne donnent ni partages ni enregistrements (« – »).
+- **Ne déclenche jamais de collecte** (elle consomme le crédit Apify affiché par `depot me`) : c'est le bouton « Actualiser » de l'app.
+
 ## Règles d'écriture par plateforme
 
 | Plateforme | Titre | Légende (max) | Conseils |
@@ -143,8 +157,7 @@ depot archive <id> --yes                                # « libère la place »
 ## Précautions
 
 - Confirmation explicite avant `delete`, `rm-file`, `folder rm`, `account rm`, `people rm` et `archive`.
-- Archivage : quand un contenu est posté sur **tous** ses comptes, l'app retire ses fichiers du stockage après un délai
-  (3 jours par défaut, réglable par le propriétaire). La fiche, les légendes et les dates restent ; `get` marque ces fichiers
-  « retiré du stockage » et ils n'ont plus de lien. Pour garder les fichiers d'un contenu, c'est dans l'app (« Garder les fichiers »).
+- Archivage : posté sur **tous** ses comptes, un contenu perd ses fichiers après le délai réglé dans l'app (`depot me`) ;
+  fiche, légendes et dates restent (`get` : « retiré du stockage »). Exception : `depot keep-files <id>`.
 - Dates `AAAA-MM-JJ`, heures `HH:MM`, heure de Paris.
 - Légendes longues ou avec guillemets : passe par `description_file` (fichier UTF-8 écrit avec Write) plutôt qu'en ligne de commande.
