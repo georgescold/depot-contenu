@@ -14,6 +14,9 @@ export DEPOT_API_KEY="dpc_…"            # créée dans l'app : Réglages → C
 > Windows / Git Bash : `curl -d '…é…'` envoie les accents dans le mauvais encodage. Mets le JSON dans un fichier UTF-8 et
 > envoie-le avec `--data-binary @corps.json` (ou utilise le CLI, qui envoie toujours de l'UTF-8).
 
+> **Hors API** : l'équipe (membres), les clés API et les réglages (dont le délai d'archivage) se gèrent uniquement dans
+> l'app. Aucune route v1 ne les modifie ; `GET /me` affiche seulement le délai d'archivage.
+
 ## Authentification
 
 `Authorization: Bearer dpc_…` (ou `X-API-Key: dpc_…`). La clé est hachée (SHA-256) et comparée à `api_keys` ; une clé
@@ -30,7 +33,7 @@ inconnue ou révoquée renvoie **401** (une clé révoquée ne peut pas être r�
 | 400 | JSON invalide, champ manquant, date ≠ `AAAA-MM-JJ`, heure ≠ `HH:MM`, valeur inconnue, id non uuid, chemin de stockage invalide, fichier vide, plus de 100 fichiers par requête |
 | 401 | Clé absente, inconnue ou révoquée |
 | 404 | Contenu, fichier, dossier ou compte introuvable (`missing`, `available_accounts` en détail) |
-| 409 | Compte ou dossier ambigu (`choices: [{ id, platform, handle, ref, folder_path }]`), compte ou fichier en double |
+| 409 | Compte ou dossier ambigu (`choices`), doublon, dossier non vide, publications non postées sans `force=true`, contenu pas encore posté partout (`archive`) |
 | 413 | Fichier > `MAX_FILE_MB` (4096 Mo) |
 | 502 | Erreur du stockage (Backblaze B2) |
 
@@ -56,6 +59,9 @@ inconnue ou révoquée renvoie **401** (une clé révoquée ne peut pas être r�
   statuts `draft|scheduled|late|partial|posted` (calculés par `contentStatus`).
 - `url` = page web du contenu : `${origin}/contenus/${id}` (origine = `APP_URL` si défini, sinon celle de la requête).
 - `warnings` : avertissements non bloquants (titre YouTube > 100 caractères, légende trop longue, **date déjà passée**…).
+- **Aperçu sans écriture** (`dry_run`) : `DELETE /folders/:id`, `DELETE /accounts/:id`, `DELETE /people/:id` (paramètre
+  `?dry_run=true`) et `POST /contents/:id/archive` (`{ "dry_run": true }`) font les mêmes vérifications (mêmes 409) et
+  renvoient ce qui serait supprimé, sans rien supprimer. Le CLI s'en sert quand `--yes` manque.
 - **100 fichiers maximum par requête** sur `/uploads` et `/assets` (le CLI envoie les fichiers un par un).
 
 ---
@@ -69,8 +75,12 @@ curl -s "$DEPOT_API_URL/api/v1/me" -H "Authorization: Bearer $DEPOT_API_KEY"
 ```json
 { "key": { "id": "…", "name": "Mon PC", "prefix": "dpc_a028Hf", "created_at": "…", "last_used_at": "…" },
   "app": { "url": "http://localhost:3000", "max_file_mb": 4096, "multipart_threshold_bytes": 104857600,
-           "max_files_per_request": 100, "today": "2026-10-17" } }
+           "max_files_per_request": 100, "today": "2026-10-17",
+           "archive_after_days": 3, "archive_after_label": "3 jours après" } }
 ```
+
+`archive_after_days` : jours entre la dernière publication et le retrait des fichiers (`null` = jamais). **Lecture seule** :
+le réglage ne se change que dans l'app.
 
 ## GET /api/v1/people
 
@@ -91,6 +101,24 @@ curl -s "$DEPOT_API_URL/api/v1/people" -H "Authorization: Bearer $DEPOT_API_KEY"
 ```bash
 curl -s -X POST "$DEPOT_API_URL/api/v1/people" -H "Authorization: Bearer $DEPOT_API_KEY" \
   -H "content-type: application/json" -d '{"name":"Enzo","color":"#0ea5e9"}'
+```
+
+## PATCH /api/v1/people/:id
+
+`:id` = id ou nom (casse et accents ignorés). `{ name?, color? }` → `{ person, previous_name }`. Doublon → 409, `none`
+réservé → 400, `color` au format `#rrggbb` (400 sinon).
+
+```bash
+curl -s -X PATCH "$DEPOT_API_URL/api/v1/people/Enzo" -H "Authorization: Bearer $DEPOT_API_KEY" \
+  -H "content-type: application/json" -d '{"name":"Enzo B.","color":"#22c55e"}'
+```
+
+## DELETE /api/v1/people/:id
+
+Supprime la personne ; ce qui lui était attribué repasse en « non attribué » (rien d'autre n'est supprimé).
+
+```json
+{ "deleted": true, "person": { "id": "…", "name": "Enzo" }, "unassigned": { "contents": 4, "accounts": 1, "folders": 2 } }
 ```
 
 ## GET /api/v1/folders
@@ -133,12 +161,36 @@ curl -s -X POST "$DEPOT_API_URL/api/v1/folders" -H "Authorization: Bearer $DEPOT
 
 ## PATCH /api/v1/folders/:id
 
-`{ assignee?, name?, color?, description? }` → `{ folder }`. `:id` = uuid du dossier, ou son chemin encodé en un seul
-segment (`Projet%2FAngle`). Le nom ne peut pas contenir `/`, `>` ni `›` (400) et doit être unique parmi ses voisins (409).
+`{ assignee?, name?, color?, description?, parent? }` → `{ folder, moved, warnings }`. `:id` = uuid du dossier, ou son
+chemin encodé en un seul segment (`Projet%2FAngle`). Le nom ne peut pas contenir `/`, `>` ni `›` (400) et doit être
+unique parmi ses voisins (409).
+
+**Déplacer** : `parent` = id ou chemin du nouveau parent, ou `null` / `""` / `"root"` pour la racine. Le dossier part
+avec ses sous-dossiers, contenus et comptes. 400 si le parent est le dossier lui-même ou un de ses sous-dossiers (le trigger
+anti-cycle est aussi intercepté) ; 409 si le nom est déjà pris chez les nouveaux voisins ; déjà à cet endroit → 200,
+`moved: false`. `warnings` : publications dont le compte n'est plus dans la chaîne des parents (elles sont gardées).
 
 ```bash
 curl -s -X PATCH "$DEPOT_API_URL/api/v1/folders/Compaatible%2FLancement" -H "Authorization: Bearer $DEPOT_API_KEY" \
   -H "content-type: application/json" -d '{"assignee":"Loys"}'
+curl -s -X PATCH "$DEPOT_API_URL/api/v1/folders/Compaatible%2FAngle%20jalousie" -H "Authorization: Bearer $DEPOT_API_KEY" \
+  -H "content-type: application/json" -d '{"parent":"Compaatible/Lancement"}'
+```
+
+## DELETE /api/v1/folders/:id
+
+`?force=true` `&dry_run=true` facultatifs. **Jamais récursif** : 409 si le dossier contient des sous-dossiers ou des
+contenus (`subfolders`, `contents` dans la réponse d'erreur). Ses comptes sont supprimés avec lui, et leurs publications
+aussi : s'il y en a de **non postées**, 409 (`accounts: [{ id, ref, unposted }]`, `unposted_publications`) sauf avec `force=true`.
+
+```bash
+curl -s -X DELETE "$DEPOT_API_URL/api/v1/folders/Compaatible%2FVieil%20angle?force=true" -H "Authorization: Bearer $DEPOT_API_KEY"
+```
+
+```json
+{ "deleted": true, "path": "Compaatible / Vieil angle",
+  "removed_accounts": [ { "id": "…", "platform": "youtube", "handle": "@x", "ref": "youtube:@x" } ],
+  "removed_publications": 3, "unposted_publications": 1 }
 ```
 
 ## POST /api/v1/accounts
@@ -154,6 +206,15 @@ curl -s -X POST "$DEPOT_API_URL/api/v1/accounts" -H "Authorization: Bearer $DEPO
 
 `{ assignee?, handle?, url? }` → `{ account }` (`assignee: "none"` retire l'attribution ; handle en double sur la même
 plateforme du même dossier → 409).
+
+## DELETE /api/v1/accounts/:id
+
+`?force=true` `&dry_run=true` facultatifs. Les publications du compte sont supprimées avec lui : s'il y en a de non
+postées, 409 (`unposted_publications`, `contents`) sauf avec `force=true`.
+
+```json
+{ "deleted": true, "account": { "id": "…", "ref": "tiktok:@x", "...": "…" }, "removed_publications": 5, "unposted_publications": 0 }
+```
 
 ## GET /api/v1/contents
 
@@ -224,12 +285,29 @@ Les lignes restent : `archived_at` est alors renseigné et `download_url` vaut `
 
 ## PATCH /api/v1/contents/:id
 
-`{ title?, format?, notes?, folder?, create_folders?, assignee? }` (`folder` = déplacer ; `assignee: "none"` retire l'attribution). Les publications dont le compte n'est plus
+`{ title?, format?, notes?, folder?, create_folders?, assignee?, keep_files? }` (`folder` = déplacer ; `assignee: "none"`
+retire l'attribution ; `keep_files: true` = ne jamais retirer ses fichiers après publication). Les publications dont le compte n'est plus
 accessible depuis le nouveau dossier sont gardées, avec un `warning`.
 
 ```bash
 curl -s -X PATCH "$DEPOT_API_URL/api/v1/contents/<id>" -H "Authorization: Bearer $DEPOT_API_KEY" \
   -H "content-type: application/json" -d '{"format":"short","folder":"Compaatible/Lancement"}'
+```
+
+## POST /api/v1/contents/:id/archive
+
+Libère le stockage tout de suite (comme « Supprimer maintenant » dans l'app) : fichiers lourds retirés de B2 ; la fiche,
+les légendes, les dates, les lignes `assets` (`archived_at`) et une miniature (ou 1re slide) ≤ 2 Mo restent. **409** si le
+contenu n'est pas posté sur tous ses comptes. Un nouvel appel ne fait rien (`archived_ids: []`, `already_archived: true`).
+Fonctionne aussi si `keep_files` est vrai (demande explicite). `{ "dry_run": true }` : ce qui serait retiré.
+
+```bash
+curl -s -X POST "$DEPOT_API_URL/api/v1/contents/<id>/archive" -H "Authorization: Bearer $DEPOT_API_KEY"
+```
+
+```json
+{ "archived_ids": ["…", "…"], "freed_bytes": 3145905, "archived_at": "2026-10-18T07:26:12.640Z",
+  "kept_ids": ["…"], "already_archived": false, "content": { "id": "…", "title": "…", "url": "…" } }
 ```
 
 ## DELETE /api/v1/contents/:id
@@ -368,7 +446,7 @@ curl -s -G "$DEPOT_API_URL/api/v1/calendar" -H "Authorization: Bearer $DEPOT_API
 
 ---
 
-## CLI `cli/depot.mjs` (version 2.1.0)
+## CLI `cli/depot.mjs` (version 2.2.0)
 
 Zéro dépendance, Node ≥ 20. Config : `DEPOT_API_URL` / `DEPOT_API_KEY`, sinon `~/.depot-contenu.json`
 (`{ "url", "key" }`, écrit par `config`). La clé du fichier n'est envoyée qu'à l'URL du fichier : si `DEPOT_API_URL`
@@ -398,8 +476,17 @@ node cli/depot.mjs calendar [--from …] [--to …] [--folder …] [--account �
 node cli/depot.mjs set-kind <assetId> thumbnail
 node cli/depot.mjs rm-file <assetId>
 node cli/depot.mjs delete <id> --yes
+node cli/depot.mjs folder move "Projet/Angle" --to "Autre projet"      # --to root = racine
+node cli/depot.mjs folder rm "Projet/Angle" --yes [--force]            # dossier vide seulement
+node cli/depot.mjs account rm <accountId> --yes [--force]
+node cli/depot.mjs people rename Enzo "Enzo B."  ·  people color Enzo "#22c55e"  ·  people rm Enzo --yes
+node cli/depot.mjs keep-files <id> [--off]
+node cli/depot.mjs archive <id> --yes
 ```
 
+- Suppressions (`delete`, `folder rm`, `account rm`, `people rm`) et `archive` : `--yes` obligatoire. Sans lui, le CLI
+  interroge l'API en `dry_run` et explique ce qui serait supprimé (code 2) ; `--force` accepte de perdre des publications
+  non postées. `me` affiche le délai d'archivage (lecture seule).
 - `upload` : arguments triés en ordre naturel ; un dossier ajoute tous ses fichiers (sauf fichiers cachés et
   `Thumbs.db` / `desktop.ini`) ; `chemin:type` fixe le type d'un fichier ; `--kind` s'applique aux autres. Fichiers de
   0 octet refusés.

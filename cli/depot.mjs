@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 
-const VERSION = "2.1.0";
+const VERSION = "2.2.0";
 
 if (Number(process.versions.node.split(".")[0]) < 20) {
   process.stderr.write(`Erreur : Node.js ${process.versions.node} détecté, ce CLI demande Node 20 ou plus récent (https://nodejs.org).\n`);
@@ -50,10 +50,10 @@ const SPECS = {
   config: { args: [0, 0], flags: ["url", "key"] },
   me: { args: [0, 0], flags: [] },
   folders: { args: [0, 0], flags: [] },
-  people: { args: [0, 2], flags: ["color"] },
+  people: { args: [0, 3], flags: ["color", "yes"] },
   mkdir: { args: [1, 1], flags: ["color", "description", "assignee"] },
-  folder: { args: [2, 2], flags: ["assignee", "name", "color", "description"] },
-  account: { args: [1, 2], flags: ["folder", "platform", "handle", "url", "create-folders", "assignee"] },
+  folder: { args: [2, 2], flags: ["assignee", "name", "color", "description", "to", "yes", "force"] },
+  account: { args: [1, 2], flags: ["folder", "platform", "handle", "url", "create-folders", "assignee", "yes", "force"] },
   list: { args: [0, 0], flags: ["folder", "status", "format", "q", "limit", "assignee"] },
   get: { args: [1, 1], flags: [] },
   push: { args: [1, 1], flags: ["rollback"] },
@@ -66,16 +66,18 @@ const SPECS = {
   "rm-file": { args: [1, 1], flags: [] },
   "set-kind": { args: [2, 2], flags: [] },
   delete: { args: [1, 1], flags: ["yes"] },
+  "keep-files": { args: [1, 1], flags: ["off"] },
+  archive: { args: [1, 1], flags: ["yes"] },
 };
 const GLOBAL_FLAGS = ["json", "help"];
-const BOOL_FLAGS = new Set(["json", "help", "yes", "undo", "include-posted", "create-folders", "rollback"]);
+const BOOL_FLAGS = new Set(["json", "help", "yes", "undo", "include-posted", "create-folders", "rollback", "force", "off"]);
 
 const USAGE = {
   config: `config --url <https://app> --key <dpc_…|->`,
-  people: `people  |  people add <nom> [--color #hex]`,
+  people: `people  |  people add <nom> [--color #hex]  |  people rename <nom|id> <nouveau nom>  |  people color <nom|id> <#hex>  |  people rm <nom|id> --yes`,
   mkdir: `mkdir "Projet/Sous-projet/Angle" [--color #hex] [--description …] [--assignee <personne>]`,
-  folder: `folder edit <chemin|id> [--assignee <personne>|none] [--name …] [--color #hex] [--description …]`,
-  account: `account add --folder <chemin> --platform <instagram|tiktok|youtube|…> --handle <@x> [--url …] [--assignee <personne>] [--create-folders]  |  account edit <accountId> [--assignee <personne>|none] [--handle …] [--url …]`,
+  folder: `folder edit <chemin|id> [--assignee <personne>|none] [--name …] [--color #hex] [--description …]  |  folder move <chemin|id> --to <chemin|id|root>  |  folder rm <chemin|id> --yes [--force]`,
+  account: `account add --folder <chemin> --platform <instagram|tiktok|youtube|…> --handle <@x> [--url …] [--assignee <personne>] [--create-folders]  |  account edit <accountId> [--assignee <personne>|none] [--handle …] [--url …]  |  account rm <accountId> --yes [--force]`,
   list: `list [--folder …] [--status draft|scheduled|late|partial|posted] [--format …] [--q …] [--assignee <personne>|none] [--limit 50]`,
   get: `get <contentId>`,
   push: `push <manifest.json> [--rollback]`,
@@ -88,6 +90,8 @@ const USAGE = {
   "rm-file": `rm-file <assetId>`,
   "set-kind": `set-kind <assetId> <video|thumbnail|photo|other>`,
   delete: `delete <contentId> --yes`,
+  "keep-files": `keep-files <contentId> [--off]`,
+  archive: `archive <contentId> --yes`,
 };
 
 /* ------------------------------------------------------------------ */
@@ -762,6 +766,8 @@ function printContent(c) {
   out(`  id  : ${c.id}`);
   out(`  web : ${c.url}`);
   if (c.notes) out(`  notes : ${oneLine(c.notes, 200)}`);
+  if (c.keep_files) out(`  fichiers gardés : oui (pas d'archivage automatique après publication)`);
+  if (c.files_archived_at) out(`  fichiers retirés du stockage le ${String(c.files_archived_at).slice(0, 10)}`);
   const assets = expectArray(c.assets, "assets");
   out(`Fichiers (${assets.length})`);
   for (const a of assets) {
@@ -806,11 +812,15 @@ Configuration
 Dossiers, comptes & personnes
   folders                                    Arborescence avec les comptes et les personnes
   ${USAGE.mkdir}
-  ${USAGE.folder}
+  folder edit <chemin|id> [--assignee <personne>|none] [--name …] [--color #hex] [--description …]
+  folder move <chemin|id> --to <chemin|id|root>   Déplace un dossier (avec tout ce qu'il contient)
+  folder rm <chemin|id> --yes [--force]          Supprime un dossier VIDE (ses comptes partent avec lui)
   account add --folder <chemin> --platform <…> --handle <@x> [--url …] [--assignee <personne>] [--create-folders]
   account edit <accountId> [--assignee <personne>|none] [--handle …] [--url …]
+  account rm <accountId> --yes [--force]          Supprime un compte et ses publications
   people                                     Personnes (Enzo, Loys…)
   people add <nom> [--color #hex]            Ajoute une personne
+  people rename <nom|id> <nouveau nom>  ·  people color <nom|id> <#hex>  ·  people rm <nom|id> --yes
 
 Contenus
   ${USAGE.list}
@@ -821,6 +831,8 @@ Contenus
   ${USAGE["rm-file"]}
   ${USAGE["set-kind"]}
   ${USAGE.delete}
+  ${USAGE["keep-files"]}                    Garde les fichiers après publication (--off : archivage normal)
+  ${USAGE.archive}                          Retire tout de suite les fichiers lourds d'un contenu posté partout
 
 Calendrier
   ${USAGE.schedule}
@@ -843,6 +855,9 @@ Manifest de push (chemins relatifs au manifest) :
                       { "account": "tiktok", "date": "2026-10-21", "description_file": "./caption.txt" } ] }
   Ordre : validation complète → contenu créé → fichiers envoyés → publications créées.
   En cas d'échec, NE PAS relancer push : suivre la commande de reprise affichée (upload puis schedule).
+
+Suppressions et archivage : --yes obligatoire (sans lui, le CLI dit ce qui serait supprimé). --force : accepte de perdre
+  des publications non postées. L'équipe, les clés API et les réglages se gèrent uniquement dans l'app.
 
 Config : DEPOT_API_URL / DEPOT_API_KEY, sinon ${shown(CONFIG_PATH)} { "url", "key" }.`;
 }
@@ -894,6 +909,9 @@ async function cmdMe(flags) {
   out(`Clé « ${key.name} » (${key.prefix}…) OK`);
   out(`App : ${app.url} · aujourd'hui ${app.today} (${fmtDay(app.today)}, heure de Paris)`);
   out(`Limite : ${app.max_file_mb} Mo par fichier · envoi en plusieurs parties au-delà de ${fmtSize(app.multipart_threshold_bytes)} · CLI ${VERSION}`);
+  if (app.archive_after_label !== undefined) {
+    out(`Archivage des fichiers après publication : ${app.archive_after_label} (réglable seulement dans l'app, Réglages)`);
+  }
 }
 
 async function cmdFolders(flags) {
@@ -929,25 +947,94 @@ async function cmdMkdir(pos, flags) {
   out(`id : ${res.folder.id}`);
 }
 
+/** Options autorisées par sous-commande (le contrôle global par commande ne suffit pas pour folder / account / people). */
+function onlyFlags(cmd, sub, flags, allowed) {
+  for (const k of Object.keys(flags)) {
+    if (k === "json" || k === "help" || allowed.includes(k)) continue;
+    throw new CliError(`--${k} ne s'utilise pas avec « ${cmd} ${sub} ».\n${usage(cmd)}`, { code: 2 });
+  }
+}
+
+/**
+ * Les 409 de l'API parlent de « force=true » : côté CLI, c'est --force.
+ * `preview` : refus rencontré pendant l'aperçu (sans --yes) → code 2, comme toute suppression non confirmée.
+ */
+function cliForce(e, preview = false) {
+  if (e instanceof CliError && typeof e.message === "string") {
+    e.message = e.message.replace(/Ajoute force=true pour confirmer\./g, "Ajoute --force (avec --yes) pour confirmer.");
+    if (preview && e.status === 409) e.code = 2;
+  }
+  return e;
+}
+
+const qs = (o) => {
+  const p = new URLSearchParams(Object.entries(o).filter(([, v]) => v));
+  const t = p.toString();
+  return t ? `?${t}` : "";
+};
+
 async function cmdFolder(pos, flags) {
-  if (pos[0] !== "edit") throw new CliError(`Sous-commande inconnue : « ${pos[0]} ».\n${usage("folder")}`, { code: 2 });
-  const body = {};
-  if (flags.assignee !== undefined) body.assignee = need(flags.assignee, "assignee", "folder");
-  if (flags.name !== undefined) body.name = need(flags.name, "name", "folder");
-  if (flags.color !== undefined) body.color = need(flags.color, "color", "folder");
-  if (flags.description !== undefined) body.description = str(flags.description, "description");
-  if (!Object.keys(body).length) throw new CliError(`Rien à modifier : donne --assignee, --name, --color ou --description.\n${usage("folder")}`, { code: 2 });
-  // Le chemin tient dans un seul segment d'URL (l'API accepte un id ou un chemin encodé).
-  const res = await api("PATCH", `/folders/${encodeURIComponent(pos[1])}`, body);
-  if (flags.json) return printJson(res);
-  const f = expectObject(res.folder, "folder");
-  const inherited = f.effective_assignee ? `${f.effective_assignee.name} (hérité d'un dossier parent)` : "personne";
-  out(`Dossier modifié : ${f.path}`);
-  out(`  pour : ${f.assignee ? f.assignee.name : inherited}`);
+  const [sub, ref] = pos;
+  const route = `/folders/${encodeURIComponent(ref)}`; // un seul segment d'URL : l'API accepte un id ou un chemin encodé
+
+  if (sub === "edit") {
+    onlyFlags("folder", "edit", flags, ["assignee", "name", "color", "description"]);
+    const body = {};
+    if (flags.assignee !== undefined) body.assignee = need(flags.assignee, "assignee", "folder");
+    if (flags.name !== undefined) body.name = need(flags.name, "name", "folder");
+    if (flags.color !== undefined) body.color = need(flags.color, "color", "folder");
+    if (flags.description !== undefined) body.description = str(flags.description, "description");
+    if (!Object.keys(body).length) throw new CliError(`Rien à modifier : donne --assignee, --name, --color ou --description.\n${usage("folder")}`, { code: 2 });
+    const res = await api("PATCH", route, body);
+    if (flags.json) return printJson(res);
+    const f = expectObject(res.folder, "folder");
+    const inherited = f.effective_assignee ? `${f.effective_assignee.name} (hérité d'un dossier parent)` : "personne";
+    out(`Dossier modifié : ${f.path}`);
+    return out(`  pour : ${f.assignee ? f.assignee.name : inherited}`);
+  }
+
+  if (sub === "move") {
+    onlyFlags("folder", "move", flags, ["to"]);
+    const to = need(flags.to, "to", "folder");
+    const parent = ["root", "racine", "/"].includes(to.trim().toLowerCase()) ? null : to;
+    const res = await api("PATCH", route, { parent });
+    if (flags.json) return printJson(res);
+    const f = expectObject(res.folder, "folder");
+    out(res.moved ? `Dossier déplacé : « ${ref} » → ${f.path}` : `Rien à faire : « ${f.path} » est déjà à cet endroit.`);
+    return printWarnings(res.warnings);
+  }
+
+  if (sub === "rm") {
+    onlyFlags("folder", "rm", flags, ["yes", "force"]);
+    if (!flags.yes) {
+      const prev = await api("DELETE", `${route}${qs({ dry_run: "true", force: flags.force ? "true" : "" })}`).catch((e) => {
+        throw cliForce(e, true);
+      });
+      const accounts = expectArray(prev.removed_accounts, "removed_accounts");
+      const lost = accounts.length
+        ? `ses ${accounts.length} compte(s) (${accounts.map((a) => a.ref).join(", ")}) et ${prev.removed_publications} publication(s)` +
+          `${prev.unposted_publications ? ` dont ${prev.unposted_publications} non postée(s)` : ""} seraient supprimés aussi`
+        : "il ne porte aucun compte";
+      throw new CliError(`Suppression définitive du dossier vide « ${prev.path} » : ${lost}. Relance avec --yes pour confirmer.`, { code: 2, data: prev });
+    }
+    const res = await api("DELETE", `${route}${qs({ force: flags.force ? "true" : "" })}`).catch((e) => {
+      throw cliForce(e);
+    });
+    if (flags.json) return printJson(res);
+    const accounts = expectArray(res.removed_accounts, "removed_accounts");
+    return out(
+      `Dossier supprimé : ${res.path}` +
+        (accounts.length ? ` (comptes supprimés : ${accounts.map((a) => a.ref).join(", ")} ; ${res.removed_publications} publication(s) supprimée(s))` : ""),
+    );
+  }
+
+  throw new CliError(`Sous-commande inconnue : « ${sub} ».\n${usage("folder")}`, { code: 2 });
 }
 
 async function cmdPeople(pos, flags) {
-  if (!pos.length) {
+  const [sub, ref, value] = pos;
+  if (!sub) {
+    onlyFlags("people", "", flags, []);
     const res = await api("GET", "/people");
     const people = expectArray(res.people, "people");
     if (flags.json) return printJson(res);
@@ -955,30 +1042,82 @@ async function cmdPeople(pos, flags) {
     for (const p of people) out(`- ${p.name}  (${p.color})  id ${p.id}`);
     return;
   }
-  if (pos[0] !== "add" || !pos[1]) throw new CliError(`${usage("people")}`, { code: 2 });
-  const res = await api("POST", "/people", { name: pos[1], color: str(flags.color, "color") });
-  if (flags.json) return printJson(res);
-  out(`Personne ajoutée : ${res.person.name}  (id ${res.person.id})`);
+  const bad = () => new CliError(usage("people"), { code: 2 });
+  if (sub === "add") {
+    onlyFlags("people", "add", flags, ["color"]);
+    if (!ref || value) throw bad();
+    const res = await api("POST", "/people", { name: ref, color: str(flags.color, "color") });
+    if (flags.json) return printJson(res);
+    return out(`Personne ajoutée : ${res.person.name}  (id ${res.person.id})`);
+  }
+  const route = `/people/${encodeURIComponent(ref ?? "")}`;
+  if (sub === "rename" || sub === "color") {
+    onlyFlags("people", sub, flags, []);
+    if (!ref || !value) throw bad();
+    const res = await api("PATCH", route, sub === "rename" ? { name: value } : { color: value });
+    if (flags.json) return printJson(res);
+    const p = expectObject(res.person, "person");
+    return out(sub === "rename" ? `Personne renommée : ${res.previous_name} → ${p.name}` : `Couleur de ${p.name} : ${p.color}`);
+  }
+  if (sub === "rm") {
+    onlyFlags("people", "rm", flags, ["yes"]);
+    if (!ref || value) throw bad();
+    if (!flags.yes) {
+      const prev = await api("DELETE", `${route}?dry_run=true`);
+      const u = expectObject(prev.unassigned, "unassigned");
+      throw new CliError(
+        `Suppression de la personne « ${prev.person.name} » : ${u.contents} contenu(s), ${u.accounts} compte(s) et ${u.folders} dossier(s) ` +
+          `repasseront en « non attribué » (rien d'autre n'est supprimé). Relance avec --yes pour confirmer.`,
+        { code: 2, data: prev },
+      );
+    }
+    const res = await api("DELETE", route);
+    if (flags.json) return printJson(res);
+    const u = expectObject(res.unassigned, "unassigned");
+    return out(`Personne supprimée : ${res.person.name} (attributions retirées : ${u.contents} contenu(s), ${u.accounts} compte(s), ${u.folders} dossier(s))`);
+  }
+  throw bad();
 }
 
 async function cmdAccount(pos, flags) {
-  if (pos[0] === "edit") {
-    if (!pos[1]) throw new CliError(`Argument manquant : id du compte.\n${usage("account")}`, { code: 2 });
-    for (const k of ["folder", "platform", "create-folders"]) {
-      if (flags[k] !== undefined) throw new CliError(`--${k} ne s'utilise pas avec « account edit ».\n${usage("account")}`, { code: 2 });
-    }
+  const [sub, id] = pos;
+  if (sub === "edit") {
+    onlyFlags("account", "edit", flags, ["assignee", "handle", "url"]);
+    if (!id) throw new CliError(`Argument manquant : id du compte.\n${usage("account")}`, { code: 2 });
     const body = {};
     if (flags.assignee !== undefined) body.assignee = need(flags.assignee, "assignee", "account");
     if (flags.handle !== undefined) body.handle = need(flags.handle, "handle", "account");
     if (flags.url !== undefined) body.url = str(flags.url, "url");
     if (!Object.keys(body).length) throw new CliError(`Rien à modifier : donne --assignee, --handle ou --url.\n${usage("account")}`, { code: 2 });
-    const res = await api("PATCH", `/accounts/${encodeURIComponent(pos[1])}`, body);
+    const res = await api("PATCH", `/accounts/${encodeURIComponent(id)}`, body);
     if (flags.json) return printJson(res);
     const a = expectObject(res.account, "account");
     return out(`Compte modifié : ${a.ref} dans ${a.folder_path} · pour : ${a.assignee ? a.assignee.name : "personne"}`);
   }
-  if (pos[0] !== "add") throw new CliError(`Sous-commande inconnue : « ${pos[0]} ».\n${usage("account")}`, { code: 2 });
-  if (pos.length > 1) throw new CliError(`Argument en trop : « ${pos[1]} ».\n${usage("account")}`, { code: 2 });
+  if (sub === "rm") {
+    onlyFlags("account", "rm", flags, ["yes", "force"]);
+    if (!id) throw new CliError(`Argument manquant : id du compte.\n${usage("account")}`, { code: 2 });
+    const route = `/accounts/${encodeURIComponent(id)}`;
+    if (!flags.yes) {
+      const prev = await api("DELETE", `${route}${qs({ dry_run: "true", force: flags.force ? "true" : "" })}`).catch((e) => {
+        throw cliForce(e, true);
+      });
+      const a = expectObject(prev.account, "account");
+      throw new CliError(
+        `Suppression définitive du compte ${a.ref} (${a.folder_path}) et de ses ${prev.removed_publications} publication(s)` +
+          `${prev.unposted_publications ? ` dont ${prev.unposted_publications} non postée(s)` : ""}. Relance avec --yes pour confirmer.`,
+        { code: 2, data: prev },
+      );
+    }
+    const res = await api("DELETE", `${route}${qs({ force: flags.force ? "true" : "" })}`).catch((e) => {
+      throw cliForce(e);
+    });
+    if (flags.json) return printJson(res);
+    return out(`Compte supprimé : ${res.account.ref} (${res.removed_publications} publication(s) supprimée(s))`);
+  }
+  if (sub !== "add") throw new CliError(`Sous-commande inconnue : « ${sub} ».\n${usage("account")}`, { code: 2 });
+  onlyFlags("account", "add", flags, ["folder", "platform", "handle", "url", "assignee", "create-folders"]);
+  if (id) throw new CliError(`Argument en trop : « ${id} ».\n${usage("account")}`, { code: 2 });
   const res = await api("POST", "/accounts", {
     folder: need(flags.folder, "folder", "account"),
     platform: need(flags.platform, "platform", "account"),
@@ -1351,6 +1490,41 @@ async function cmdCalendar(flags) {
   }
 }
 
+async function cmdKeepFiles(pos, flags) {
+  const keep = !flags.off;
+  const c = await api("PATCH", `/contents/${encodeURIComponent(pos[0])}`, { keep_files: keep });
+  if (flags.json) return printJson(c);
+  out(
+    keep
+      ? `Fichiers gardés pour « ${c.title} » : ils ne seront pas retirés du stockage après publication.`
+      : `Archivage normal pour « ${c.title} » : ses fichiers seront retirés après publication, selon le délai réglé dans l'app.`,
+  );
+}
+
+async function cmdArchive(pos, flags) {
+  const route = `/contents/${encodeURIComponent(pos[0])}/archive`;
+  if (!flags.yes) {
+    const prev = await api("POST", route, { dry_run: true });
+    const n = expectArray(prev.would_archive_ids, "would_archive_ids").length;
+    const kept = expectArray(prev.kept_ids, "kept_ids").length;
+    if (!n) throw new CliError(`Rien à retirer pour « ${prev.content.title} » : ses fichiers sont déjà archivés.`, { code: 2, data: prev });
+    throw new CliError(
+      `Retrait définitif de ${n} fichier(s) de « ${prev.content.title} » du stockage (${fmtSize(prev.freed_bytes)} libérés)` +
+        `${kept ? `, ${kept} miniature gardée` : ""}. La fiche, les légendes et les dates restent.` +
+        `${prev.keep_files ? " Attention : ce contenu est marqué « fichiers gardés »." : ""} Relance avec --yes pour confirmer.`,
+      { code: 2, data: prev },
+    );
+  }
+  const res = await api("POST", route, {});
+  if (flags.json) return printJson(res);
+  const ids = expectArray(res.archived_ids, "archived_ids");
+  out(
+    ids.length
+      ? `Fichiers retirés du stockage : ${ids.length} (${fmtSize(res.freed_bytes)} libérés) pour « ${res.content.title} ».`
+      : `Rien à faire : les fichiers de « ${res.content.title} » sont déjà retirés.`,
+  );
+}
+
 async function cmdRmFile(pos, flags) {
   const res = await api("DELETE", `/assets/${encodeURIComponent(pos[0])}`);
   if (flags.json) return printJson(res);
@@ -1403,6 +1577,8 @@ const HANDLERS = {
   delete: cmdDelete,
   people: cmdPeople,
   folder: cmdFolder,
+  "keep-files": cmdKeepFiles,
+  archive: cmdArchive,
 };
 
 async function main() {

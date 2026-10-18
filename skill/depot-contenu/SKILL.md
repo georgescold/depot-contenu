@@ -1,6 +1,6 @@
 ---
 name: depot-contenu
-description: Range des vidéos, reels, carrousels, slides, miniatures et légendes dans l'app « Dépôt contenu » (drive/CRM des contenus à poster) et les programme dans son calendrier de publication, via son CLI. À utiliser quand l'utilisateur dit « envoie / balance / range / mets / dépose … dans le dépôt », « … dans l'angle X / le projet Y », « dépose cette vidéo / mon reel / mon carrousel / mes slides », « programme ce post », « planifie la publication de… », « cale ce reel mardi 18 h », « ajoute au calendrier de publication / au calendrier éditorial / au planning de publication », « qu'est-ce que je dois poster aujourd'hui / cette semaine », « qu'est-ce qu'Enzo doit poster aujourd'hui / cette semaine », « les vidéos de Loys », « attribue … à Enzo », « c'est pour Loys », « qu'est-ce qui est en retard », « marque comme posté », « j'ai publié le post », « crée l'angle / le sous-projet », « ajoute le compte Instagram du projet », ou cite « Dépôt contenu ». NE PAS utiliser pour un dépôt git (repo, « depot » au sens git, commit, push git, GitHub).
+description: Range des vidéos, reels, carrousels, slides, miniatures et légendes dans l'app « Dépôt contenu » (drive/CRM des contenus à poster) et les programme dans son calendrier de publication, via son CLI. À utiliser quand l'utilisateur dit « envoie / balance / range / mets / dépose … dans le dépôt », « … dans l'angle X / le projet Y », « dépose cette vidéo / mon reel / mon carrousel / mes slides », « programme ce post », « planifie la publication de… », « cale ce reel mardi 18 h », « ajoute au calendrier de publication / au calendrier éditorial / au planning de publication », « qu'est-ce que je dois poster aujourd'hui / cette semaine », « qu'est-ce qu'Enzo doit poster aujourd'hui / cette semaine », « les vidéos de Loys », « attribue … à Enzo », « c'est pour Loys », « supprime le dossier / l'angle X », « déplace l'angle X dans le projet Y », « supprime le compte », « renomme Enzo en … », « garde les fichiers de … », « libère la place / supprime les fichiers de … », « qu'est-ce qui est en retard », « marque comme posté », « j'ai publié le post », « crée l'angle / le sous-projet », « ajoute le compte Instagram du projet », ou cite « Dépôt contenu ». NE PAS utiliser pour un dépôt git (repo, « depot » au sens git, commit, push git, GitHub).
 ---
 
 # Dépôt contenu
@@ -104,6 +104,25 @@ depot delete <id> --yes                               # suppression définitive 
 - « J'ai posté le reel » → `depot posted <id> --account <compte>` (+ `--url` si l'utilisateur donne le lien).
 - Options inconnues refusées (code 2) : ne devine pas d'options, lis `depot help`.
 
+## Ranger (dossiers, comptes, personnes, fichiers)
+
+```bash
+depot folder move "Projet/Angle" --to "Autre projet"   # --to root = à la racine ; warnings si des comptes ne suivent plus
+depot folder rm "Projet/Angle" --yes [--force]          # dossier VIDE seulement ; ses comptes et leurs publications partent avec lui
+depot account rm <accountId> --yes [--force]            # supprime le compte et ses publications
+depot people rename Enzo "Enzo B." · depot people color Enzo "#0ea5e9" · depot people rm Enzo --yes
+depot keep-files <id> [--off]                           # garder les fichiers après publication (exception à l'archivage)
+depot archive <id> --yes                                # « libère la place » : retire tout de suite les fichiers d'un contenu posté partout
+```
+
+- **Avant toute suppression, `--force` ou `archive`** : lance d'abord la commande **sans `--yes`** (aperçu, code 2 : comptes,
+  publications non postées, fichiers et place libérée), répète à l'utilisateur ce qui sera perdu, attends un « oui » explicite,
+  puis relance avec `--yes`. N'ajoute `--force` (perte de publications non postées) que s'il l'accepte clairement.
+- Dossier non vide (409) : propose de déplacer ou de supprimer son contenu d'abord ; jamais de suppression en cascade.
+- `archive` garde la fiche, les légendes, les dates et une miniature ≤ 2 Mo ; la vidéo et les slides sont perdues.
+- **L'équipe, les clés API et les réglages** (dont le délai d'archivage, affiché par `depot me`) **ne se gèrent que dans l'app** :
+  aucune commande ne les modifie. Si l'utilisateur le demande, renvoie-le vers l'app (Réglages).
+
 ## Règles d'écriture par plateforme
 
 | Plateforme | Titre | Légende (max) | Conseils |
@@ -124,7 +143,7 @@ depot delete <id> --yes                               # suppression définitive 
 
 ## Précautions
 
-- Confirmation explicite avant `delete` et `rm-file`.
+- Confirmation explicite avant `delete`, `rm-file`, `folder rm`, `account rm`, `people rm` et `archive`.
 - Archivage : quand un contenu est posté sur **tous** ses comptes, l'app retire ses fichiers du stockage après un délai
   (3 jours par défaut, réglable par le propriétaire). La fiche, les légendes et les dates restent ; `get` marque ces fichiers
   « retiré du stockage » et ils n'ont plus de lien. Pour garder les fichiers d'un contenu, c'est dans l'app (« Garder les fichiers »).

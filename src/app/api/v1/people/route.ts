@@ -3,7 +3,7 @@ import { FOLDER_COLORS } from "@/lib/constants";
 import type { Person } from "@/lib/types";
 import { getAdminClient } from "@/lib/supabase/admin";
 import { ApiError, dbFail, handle, json, readObject } from "@/lib/api/http";
-import { isNoneRef, loadPeople } from "@/lib/api/people";
+import { checkPersonName, loadPeople } from "@/lib/api/people";
 import { normName } from "@/lib/api/resolve";
 import { optColor, optText } from "@/lib/api/validate";
 
@@ -21,10 +21,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   return handle(req, async () => {
     const body = await readObject(req);
-    const name = (optText(body, "name", { max: 60 }) ?? "").replace(/\s+/g, " ");
-    if (!name) throw new ApiError(400, "Le champ « name » est obligatoire (ex. « Enzo »).");
-    if (/[\u0000-\u001f\u007f]/.test(name)) throw new ApiError(400, "Le nom contient des caractères de contrôle.");
-    if (isNoneRef(name)) throw new ApiError(400, `« ${name} » est réservé (il sert à retirer une attribution).`);
+    const name = checkPersonName(optText(body, "name", { max: 200 }));
     const color = optColor(body);
 
     const sb = getAdminClient();

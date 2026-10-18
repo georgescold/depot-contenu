@@ -19,7 +19,7 @@ export async function GET(req: NextRequest, ctx: Ctx) {
   });
 }
 
-/** PATCH /api/v1/contents/:id { title?, format?, notes?, folder?, create_folders?, assignee? } (assignee "none" = retirer) */
+/** PATCH /api/v1/contents/:id { title?, format?, notes?, folder?, create_folders?, assignee?, keep_files? } (assignee "none" = retirer) */
 export async function PATCH(req: NextRequest, ctx: Ctx) {
   return handle(req, async () => {
     const id = requireUuid((await ctx.params).id, "id du contenu");
@@ -37,6 +37,9 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
     if (format) patch.format = format;
     const notes = optText(body, "notes", { max: 100000, trim: false });
     if (notes !== undefined) patch.notes = notes.trim();
+    // Exception à l'archivage automatique après publication.
+    const keepFiles = optBool(body, "keep_files");
+    if (keepFiles !== undefined) patch.keep_files = keepFiles;
 
     const [folders, accounts, peopleList] = await Promise.all([loadFolderCtx(sb), loadAccounts(sb), loadPeople(sb)]);
     const assigneeId = resolvePerson(peopleList, body.assignee);
@@ -69,7 +72,7 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
     }
 
     if (!Object.keys(patch).length && !createdFolders.length) {
-      throw new ApiError(400, "Rien à modifier : fournis au moins un champ parmi title, format, notes, folder, assignee.");
+      throw new ApiError(400, "Rien à modifier : fournis au moins un champ parmi title, format, notes, folder, assignee, keep_files.");
     }
 
     let content: Content = current;

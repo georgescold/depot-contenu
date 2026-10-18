@@ -75,6 +75,16 @@ export function resolvePerson(people: Person[], ref: unknown, label = "assignee"
   );
 }
 
+/** Nom de personne valide (création ou renommage) : 400 sinon. */
+export function checkPersonName(raw: string | undefined): string {
+  const name = (raw ?? "").replace(/\s+/g, " ").trim();
+  if (!name) throw new ApiError(400, "Le champ « name » est obligatoire (ex. « Enzo »).");
+  if (name.length > 60) throw new ApiError(400, `Nom trop long (${name.length} caractères, max 60).`);
+  if (/[\u0000-\u001f\u007f]/.test(name)) throw new ApiError(400, "Le nom contient des caractères de contrôle.");
+  if (isNoneRef(name)) throw new ApiError(400, `« ${name} » est réservé (il sert à retirer une attribution).`);
+  return name;
+}
+
 /** Pour les filtres : id de la personne, ou UNASSIGNED (« none »). */
 export function resolvePersonFilter(people: Person[], ref: string): string {
   const id = resolvePerson(people, ref, "assignee");

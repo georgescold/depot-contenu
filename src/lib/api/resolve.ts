@@ -233,6 +233,15 @@ export function previewFolder(ctx: FolderCtx, ref: unknown, opts: { create?: boo
   return { existing: parent, missing: [], path: ctx.path(parent!.id) };
 }
 
+/** Paramètre d'URL `:id` (uuid ou chemin encodé en un seul segment), décodé sans planter sur un « % » littéral. */
+export function decodeRefParam(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
 /** Relit en base le dossier `name` sous `parentId` (même règle que l'index unique : casse et espaces ignorés). */
 async function findSibling(sb: SupabaseClient, parentId: string | null, name: string): Promise<Folder | null> {
   const q = sb.from("folders").select("*");
