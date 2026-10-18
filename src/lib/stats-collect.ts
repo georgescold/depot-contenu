@@ -264,7 +264,10 @@ export async function ingestRun(admin: SupabaseClient, apifyRunId: string) {
   const withData = new Set([...posts.map((p) => p.account_id), ...accounts.map((a) => a.account_id)]);
   const checkedAt = new Date().toISOString();
   for (const accountId of new Set(Object.values((row.inputs ?? {}) as Record<string, string>))) {
-    const err = parsed.errors.get(accountId) ?? (withData.has(accountId) ? null : run.status === "SUCCEEDED" ? "Aucun résultat : compte vide, privé ou introuvable." : null);
+    // des données sont arrivées : les avertissements du scraper (ex. « pas de Shorts ») ne sont pas des erreurs
+    const err = withData.has(accountId)
+      ? null
+      : (parsed.errors.get(accountId) ?? (run.status === "SUCCEEDED" ? "Aucun résultat : compte vide, privé ou introuvable." : null));
     await admin.from("accounts").update({ stats_error: err, stats_checked_at: checkedAt }).eq("id", accountId);
   }
   const day = parisDay();
@@ -321,7 +324,7 @@ export async function ingestRun(admin: SupabaseClient, apifyRunId: string) {
       status: "INGESTED",
       items: items.length,
       posts: saved,
-      cost_usd: run.usageTotalUsd ?? null,
+      cost_usd: run.usageTotalUsd === undefined ? null : Math.round(run.usageTotalUsd * 10000) / 10000,
       error: run.status === "SUCCEEDED" ? null : `${run.status}${run.statusMessage ? ` : ${run.statusMessage}` : ""}`,
       finished_at: run.finishedAt ?? now,
       ingested_at: now,
