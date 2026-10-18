@@ -1,6 +1,8 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getDatasetItems, getRun, startActorRun } from "./apify";
+import { archiveConfirmedContents } from "./archive";
 import { postIdFromUrl } from "./post-id";
+import { matchPostsToPublications } from "./post-match";
 import { scraperInput } from "./stats-input";
 export { scraperInput };
 import type { Account } from "./types";
@@ -137,6 +139,9 @@ interface AccountRecord {
   posts_count: number | null;
 }
 
+/** Légende gardée en entier (TikTok : 4 000 caractères max) : elle sert à repérer les contenus publiés. */
+const CAPTION_MAX = 5000;
+
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.round(v) : null);
 const str = (v: unknown, max = 500): string => (typeof v === "string" ? v.slice(0, max) : "");
 const iso = (v: unknown): string | null => {
@@ -177,7 +182,7 @@ export function parseItems(platform: StatsPlatform, items: Record<string, unknow
         platform,
         external_id: String(it.id),
         url: str(it.webVideoUrl, 300),
-        caption: str(it.text),
+        caption: str(it.text, CAPTION_MAX),
         kind: it.isSlideshow ? "carousel" : "video",
         published_at: iso(it.createTimeISO) ?? iso(it.createTime),
         thumbnail_url: str(video.coverUrl, 1000),
@@ -199,7 +204,7 @@ export function parseItems(platform: StatsPlatform, items: Record<string, unknow
           platform,
           external_id: String(p.shortCode),
           url: str(p.url, 300) || `https://www.instagram.com/p/${p.shortCode}/`,
-          caption: str(p.caption),
+          caption: str(p.caption, CAPTION_MAX),
           kind: type === "Video" ? "reel" : type === "Sidecar" ? "carousel" : "photo",
           published_at: iso(p.timestamp),
           thumbnail_url: str(p.displayUrl, 1000),
@@ -273,24 +278,18 @@ export async function ingestRun(admin: SupabaseClient, apifyRunId: string) {
   const day = parisDay();
   const now = new Date().toISOString();
 
-  // lien avec les publications de l'app (par l'identifiant contenu dans « Lien du post »)
   const accountIds = [...new Set(posts.map((p) => p.account_id))];
-  const pubByKey = new Map<string, string>();
-  if (accountIds.length) {
-    const { data: pubs } = await admin.from("publications").select("id, account_id, post_url").in("account_id", accountIds).neq("post_url", "");
-    for (const p of pubs ?? []) {
-      const id = postIdFromUrl(platform, p.post_url as string);
-      if (id) pubByKey.set(`${p.account_id}|${id}`, p.id as string);
-    }
-  }
+  const { pubByKey, contentOfPub, detected } = await linkPublications(admin, platform, accountIds, posts);
 
   let saved = 0;
+  const linkedPubs = new Set<string>();
   for (let i = 0; i < posts.length; i += 200) {
     const chunk = posts.slice(i, i + 200).map((p) => ({
       ...p,
       publication_id: pubByKey.get(`${p.account_id}|${p.external_id}`) ?? null,
       updated_at: now,
     }));
+    for (const c of chunk) if (c.publication_id) linkedPubs.add(c.publication_id);
     const { data: upserted, error } = await admin
       .from("post_stats")
       .upsert(chunk, { onConflict: "account_id,external_id" })
@@ -318,6 +317,15 @@ export async function ingestRun(admin: SupabaseClient, apifyRunId: string) {
     if (aErr) throw aErr;
   }
 
+  // contenus dont tous les posts sont maintenant retrouvés en ligne : fichiers retirés du stockage sans attendre
+  const touched = [...new Set([...linkedPubs].map((id) => contentOfPub.get(id)).filter((id): id is string => !!id))];
+  const archived = await archiveConfirmedContents(admin, touched).catch((e: unknown) => ({
+    contents: 0,
+    files: 0,
+    freed_bytes: 0,
+    errors: [e instanceof Error ? e.message : String(e)],
+  }));
+
   await admin
     .from("apify_runs")
     .update({
@@ -330,7 +338,92 @@ export async function ingestRun(admin: SupabaseClient, apifyRunId: string) {
       ingested_at: now,
     })
     .eq("apify_run_id", apifyRunId);
-  return { status: "ingested" as const, items: items.length, posts: saved, runStatus: run.status };
+  return { status: "ingested" as const, items: items.length, posts: saved, runStatus: run.status, detected, archived };
+}
+
+/** Heure de Paris d'un instant : date (YYYY-MM-DD) et heure (HH:MM:00), pour ranger le post au bon jour du planning. */
+function parisDateTime(isoDate: string) {
+  const d = new Date(isoDate);
+  const time = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Paris", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(d);
+  return { date: parisDay(d), time: `${time}:00` };
+}
+
+/**
+ * Relie les posts collectés aux publications de l'app : par l'identifiant contenu dans « Lien du post »,
+ * sinon par le texte publié (repérage automatique). Une publication repérée est cochée « posté »
+ * avec son lien, et rangée au jour et à l'heure réels de parution.
+ */
+async function linkPublications(admin: SupabaseClient, platform: StatsPlatform, accountIds: string[], posts: PostRecord[]) {
+  const pubByKey = new Map<string, string>();
+  const contentOfPub = new Map<string, string>();
+  let detected = 0;
+  if (!accountIds.length) return { pubByKey, contentOfPub, detected };
+
+  const { data, error } = await admin
+    .from("publications")
+    .select("id, content_id, account_id, posted, post_url, title, description, contents(title)")
+    .in("account_id", accountIds);
+  if (error) throw error;
+  type Row = {
+    id: string;
+    content_id: string;
+    account_id: string;
+    posted: boolean;
+    post_url: string;
+    title: string;
+    description: string;
+    contents: { title: string } | null;
+  };
+  const pubs = (data ?? []) as unknown as Row[];
+  const unlinked: Row[] = [];
+  for (const p of pubs) {
+    contentOfPub.set(p.id, p.content_id);
+    const id = postIdFromUrl(platform, p.post_url);
+    if (id) pubByKey.set(`${p.account_id}|${id}`, p.id);
+    else unlinked.push(p);
+  }
+
+  const postByKey = new Map(posts.map((p) => [`${p.account_id}|${p.external_id}`, p]));
+  const free = [...postByKey].filter(([key, p]) => !pubByKey.has(key) && postIdFromUrl(platform, p.url));
+  const matches = matchPostsToPublications(
+    free.map(([key, p]) => ({ key, account_id: p.account_id, caption: p.caption })),
+    unlinked.map((p) => ({
+      id: p.id,
+      account_id: p.account_id,
+      platform,
+      title: p.title,
+      description: p.description,
+      content_title: p.contents?.title ?? "",
+    })),
+  );
+
+  for (const [pubId, key] of matches) {
+    const pub = unlinked.find((p) => p.id === pubId)!;
+    const post = postByKey.get(key)!;
+    const patch: Record<string, unknown> = { post_url: post.url };
+    if (!pub.posted) {
+      patch.posted = true;
+      patch.posted_at = post.published_at ?? new Date().toISOString();
+      if (post.published_at) {
+        const at = parisDateTime(post.published_at);
+        patch.scheduled_date = at.date;
+        patch.scheduled_time = at.time;
+      }
+    }
+    // garde-fou : on ne touche pas une publication modifiée entre-temps dans l'app
+    const { data: updated, error: uErr } = await admin
+      .from("publications")
+      .update(patch)
+      .eq("id", pubId)
+      .eq("posted", pub.posted)
+      .eq("post_url", pub.post_url)
+      .select("id");
+    if (uErr) throw uErr;
+    if (!updated?.length) continue;
+    pubByKey.set(key, pubId);
+    detected++;
+  }
+  return { pubByKey, contentOfPub, detected };
 }
 
 /** Rattrape les collectes terminées dont le webhook n'est pas arrivé. */

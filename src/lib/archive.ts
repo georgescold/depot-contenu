@@ -3,10 +3,13 @@ import {
   ARCHIVE_DELAY_CHOICES,
   DEFAULT_ARCHIVE_DELAY,
   KEEP_COVER_MAX_BYTES,
+  archiveDelayStart,
   filesToArchive,
+  isConfirmedOnline,
   isFullyPosted,
   lastPostedAt,
   type ArchivableAssetLike,
+  type ArchiveRulePublication,
 } from "./archive-rules";
 import { deleteObjects } from "./b2";
 
@@ -21,8 +24,24 @@ export interface ArchivableAsset extends ArchivableAssetLike {
 export interface ArchivableContent {
   id: string;
   keep_files: boolean;
-  publications: { posted: boolean; posted_at: string | null }[];
+  created_at: string;
+  publications: {
+    posted: boolean;
+    posted_at: string | null;
+    account: { platform: string } | null;
+    /** post retrouvé en ligne par la collecte (au plus un par publication) */
+    post_stats: { published_at: string | null }[];
+  }[];
   assets: ArchivableAsset[];
+}
+
+function rulePublications(c: ArchivableContent): ArchiveRulePublication[] {
+  return c.publications.map((p) => ({
+    posted: p.posted,
+    posted_at: p.posted_at,
+    platform: p.account?.platform ?? "",
+    online: p.post_stats?.[0] ?? null,
+  }));
 }
 
 /** Délai réglé (en jours) ; null = jamais. */
@@ -62,9 +81,41 @@ export async function archiveContentFiles(
 }
 
 export const ARCHIVE_SELECT =
-  "id, keep_files, publications(posted, posted_at), assets(id, kind, position, storage_path, size_bytes, archived_at)";
+  "id, keep_files, created_at, publications(posted, posted_at, account:accounts!publications_account_id_fkey(platform), post_stats(published_at)), assets(id, kind, position, storage_path, size_bytes, archived_at)";
 
-/** Passage automatique (cron quotidien) : archive les contenus postés depuis plus que le délai réglé. */
+/**
+ * Juste après une collecte : retire tout de suite les fichiers des contenus dont tous les posts ont été retrouvés en ligne
+ * (sauf « Garder les fichiers » ou archivage désactivé dans les réglages).
+ */
+export async function archiveConfirmedContents(admin: SupabaseClient, contentIds: string[]) {
+  const res = { contents: 0, files: 0, freed_bytes: 0, errors: [] as string[] };
+  if (!contentIds.length || (await getArchiveDelay(admin)) === null) return res;
+  for (let i = 0; i < contentIds.length; i += 100) {
+    const { data, error } = await admin
+      .from("contents")
+      .select(ARCHIVE_SELECT)
+      .in("id", contentIds.slice(i, i + 100))
+      .eq("keep_files", false);
+    if (error) throw error;
+    for (const c of (data ?? []) as unknown as ArchivableContent[]) {
+      if (!filesToArchive(c.assets).length || !isConfirmedOnline(c.created_at, rulePublications(c))) continue;
+      try {
+        const done = await archiveContentFiles(admin, c);
+        res.contents++;
+        res.files += done.archivedIds.length;
+        res.freed_bytes += done.freedBytes;
+      } catch (e) {
+        res.errors.push(`${c.id} : ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+  }
+  return res;
+}
+
+/**
+ * Passage automatique (cron quotidien) : archive les contenus postés partout dont les posts ont été retrouvés en ligne,
+ * et les autres une fois le délai réglé écoulé.
+ */
 export async function runAutoArchive(admin: SupabaseClient) {
   const days = await getArchiveDelay(admin);
   if (days === null) return { enabled: false, contents: 0, files: 0, freed_bytes: 0, errors: [] as string[] };
@@ -81,9 +132,10 @@ export async function runAutoArchive(admin: SupabaseClient) {
       .order("id")
       .range(from, from + 499);
     if (error) throw error;
-    for (const c of (data ?? []) as ArchivableContent[]) {
-      if (!isFullyPosted(c.publications) || lastPostedAt(c.publications) > cutoff) continue;
-      if (!filesToArchive(c.assets).length) continue;
+    for (const c of (data ?? []) as unknown as ArchivableContent[]) {
+      const pubs = rulePublications(c);
+      if (!isFullyPosted(pubs) || !filesToArchive(c.assets).length) continue;
+      if (!isConfirmedOnline(c.created_at, pubs) && archiveDelayStart(c.created_at, pubs) > cutoff) continue;
       try {
         const res = await archiveContentFiles(admin, c);
         contents++;

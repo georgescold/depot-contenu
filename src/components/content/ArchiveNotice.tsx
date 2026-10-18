@@ -1,10 +1,18 @@
 "use client";
 
 import { Archive, ShieldCheck } from "lucide-react";
-import { useState } from "react";
-import { filesToArchive, isFullyPosted, lastPostedAt } from "@/lib/archive-rules";
+import { useEffect, useState } from "react";
+import {
+  ONLINE_CHECK_PLATFORMS,
+  archiveDelayStart,
+  filesToArchive,
+  isConfirmedOnline,
+  isFullyPosted,
+  type ArchiveRulePublication,
+} from "@/lib/archive-rules";
 import { dateTimeLabel, formatBytes, longDate } from "@/lib/format";
 import { todayISO } from "@/lib/status";
+import { supabase } from "@/lib/supabase/browser";
 import type { ContentFull } from "@/lib/types";
 import { useData } from "../data/DataProvider";
 import { Button, cn } from "../ui";
@@ -13,14 +21,44 @@ const DAY = 24 * 3600 * 1000;
 
 /**
  * Archivage après publication : annonce la suppression automatique des fichiers lourds une fois le contenu
- * posté partout, permet de la repousser (« Garder les fichiers ») ou de libérer l'espace tout de suite,
- * et liste les fichiers déjà retirés (historique).
+ * posté partout (dès que la collecte retrouve ses posts en ligne, sinon après le délai réglé), permet de la
+ * repousser (« Garder les fichiers ») ou de libérer l'espace tout de suite, et liste les fichiers déjà retirés.
  */
 export function ArchiveNotice({ content }: { content: ContentFull }) {
-  const { archiveAfterDays, updateContent, archiveNow } = useData();
+  const { archiveAfterDays, updateContent, archiveNow, accountById } = useData();
   const [busy, setBusy] = useState(false);
   const posted = isFullyPosted(content.publications);
   const pending = filesToArchive(content.assets);
+  const waiting = posted && pending.length > 0;
+
+  // posts retrouvés en ligne par la collecte de la nuit (publication → date de parution)
+  const pubIds = content.publications.map((p) => p.id).join(",");
+  const [online, setOnline] = useState<{ ids: string; found: Map<string, string | null> } | null>(null);
+  useEffect(() => {
+    if (!waiting || !pubIds) return;
+    let alive = true;
+    supabase()
+      .from("post_stats")
+      .select("publication_id, published_at")
+      .in("publication_id", pubIds.split(","))
+      .then(({ data }) => {
+        if (!alive) return;
+        setOnline({ ids: pubIds, found: new Map((data ?? []).map((r) => [r.publication_id as string, r.published_at as string | null])) });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [waiting, pubIds]);
+  const found = online?.ids === pubIds ? online.found : null;
+  const rulePubs: ArchiveRulePublication[] = content.publications.map((p) => ({
+    posted: p.posted,
+    posted_at: p.posted_at,
+    platform: accountById.get(p.account_id)?.platform ?? "",
+    online: found?.has(p.id) ? { published_at: found.get(p.id) ?? null } : null,
+  }));
+  const tracked = rulePubs.filter((p) => ONLINE_CHECK_PLATFORMS.includes(p.platform));
+  const confirmed = !!found && isConfirmedOnline(content.created_at, rulePubs);
+  const allFound = !!found && tracked.length > 0 && tracked.every((p) => p.online);
   const archived = content.assets.filter((a) => a.archived_at);
   const pendingSize = pending.reduce((n, a) => n + (a.size_bytes || 0), 0);
   const archivedSize = archived.reduce((n, a) => n + (a.size_bytes || 0), 0);
@@ -37,16 +75,26 @@ export function ArchiveNotice({ content }: { content: ContentFull }) {
     setBusy(false);
   };
 
-  let planned: string | null = null;
-  if (posted && pending.length && !content.keep_files && archiveAfterDays !== undefined && archiveAfterDays !== null) {
-    const due = new Date(lastPostedAt(content.publications) + archiveAfterDays * DAY);
-    const dueIso = `${due.getFullYear()}-${String(due.getMonth() + 1).padStart(2, "0")}-${String(due.getDate()).padStart(2, "0")}`;
-    planned = dueIso <= todayISO() ? "cette nuit" : `à partir du ${longDate(dueIso).toLowerCase()}`;
+  // échéance du délai réglé : « cette nuit » ou une date
+  let due: { tonight: boolean; date: string } | null = null;
+  if (waiting && !content.keep_files && archiveAfterDays !== undefined && archiveAfterDays !== null) {
+    const d = new Date(archiveDelayStart(content.created_at, content.publications) + archiveAfterDays * DAY);
+    const dueIso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    due = { tonight: dueIso <= todayISO(), date: longDate(dueIso).toLowerCase() };
   }
+  const size = formatBytes(pendingSize);
+  let planned: string;
+  if (confirmed) planned = `Posts retrouvés en ligne : ses fichiers (${size}) sont retirés du stockage cette nuit.`;
+  else if (!due) planned = `Contenu posté partout : ses fichiers (${size}) seront bientôt retirés du stockage.`;
+  else if (allFound)
+    planned = `Contenu déjà en ligne quand il a été ajouté ici : ses fichiers (${size}) seront retirés du stockage ${due.tonight ? "cette nuit" : `à partir du ${due.date}`}.`;
+  else if (tracked.length)
+    planned = `Contenu posté partout : ses fichiers (${size}) seront retirés du stockage dès que la collecte de la nuit retrouvera ses posts en ligne, au plus tard ${due.tonight ? "cette nuit" : `le ${due.date}`}.`;
+  else planned = `Contenu posté partout : ses fichiers (${size}) seront retirés du stockage ${due.tonight ? "cette nuit" : `à partir du ${due.date}`}.`;
 
   return (
     <div className="space-y-3">
-      {posted && pending.length > 0 && (
+      {waiting && (
         <div
           className={cn(
             "rounded-2xl border p-3 text-sm",
@@ -64,9 +112,7 @@ export function ArchiveNotice({ content }: { content: ContentFull }) {
                 ? "Fichiers conservés : pas de suppression automatique pour ce contenu."
                 : archiveAfterDays === null
                   ? "Contenu posté partout. La suppression automatique des fichiers est désactivée (Réglages)."
-                  : planned
-                    ? `Contenu posté partout : ses fichiers (${formatBytes(pendingSize)}) seront retirés du stockage ${planned}.`
-                    : `Contenu posté partout : ses fichiers (${formatBytes(pendingSize)}) seront bientôt retirés du stockage.`}
+                  : planned}
             </span>
           </p>
           <p className="mt-1 pl-6 text-xs text-muted">

@@ -505,7 +505,7 @@ function StorageSection() {
         <div className="border-t border-line pt-4">
           <Field
             label="Après publication sur tous les comptes, retirer les fichiers du stockage"
-            hint="Le titre, les légendes, les dates, les liens et une petite image de couverture restent dans l'historique. Sur chaque contenu, « Garder les fichiers » fait une exception."
+            hint="Dès que la collecte de la nuit retrouve les posts en ligne (TikTok, Instagram, YouTube), les fichiers sont retirés tout de suite ; sinon, après ce délai. Le titre, les légendes, les dates, les liens et une petite image de couverture restent dans l'historique. Sur chaque contenu, « Garder les fichiers » fait une exception ; « jamais » coupe tout."
           >
             <Select
               value={archiveAfterDays === undefined ? "" : archiveAfterDays === null ? "never" : String(archiveAfterDays)}

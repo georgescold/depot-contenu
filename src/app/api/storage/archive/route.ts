@@ -10,7 +10,7 @@ export const POST = withMember(async (req) => {
   const { data, error } = await admin.from("contents").select(ARCHIVE_SELECT).eq("id", id).maybeSingle();
   if (error) return jsonError(error.message, 500);
   if (!data) return jsonError("Contenu introuvable.", 404);
-  const content = data as ArchivableContent;
+  const content = data as unknown as ArchivableContent;
   if (!isFullyPosted(content.publications)) {
     return jsonError("Ce contenu n'est pas encore posté sur tous ses comptes.", 409);
   }

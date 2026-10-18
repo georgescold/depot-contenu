@@ -30,9 +30,15 @@ export async function GET(req: NextRequest) {
         multipart_threshold_bytes: MULTIPART_THRESHOLD,
         max_files_per_request: 100,
         today: todayParis(),
-        /** Jours entre la dernière publication et le retrait des fichiers ; null = jamais. Lecture seule. */
+        /**
+         * Retrait des fichiers d'un contenu posté partout : dès que la collecte a retrouvé ses posts en ligne,
+         * sinon après ce nombre de jours ; null = jamais. Lecture seule.
+         */
         archive_after_days: archiveDays,
-        archive_after_label: archiveDelayLabel(archiveDays),
+        archive_after_label:
+          archiveDays === null
+            ? archiveDelayLabel(null)
+            : `dès que la collecte de la nuit retrouve les posts en ligne, sinon ${archiveDelayLabel(archiveDays)}`,
         // Crédit Apify (collecte des statistiques) : total restant et nombre de clés, jamais les clés elles-mêmes.
         ...(credit ?? {}),
       },

@@ -11,6 +11,8 @@ titre, légende, posté oui/non). Un contenu peut utiliser les comptes de son do
 **Personnes** (`depot people --json` : Enzo, Loys…) : une publication revient à la personne du contenu, sinon à celle du
 compte, sinon à celle du dossier le plus proche (`assignee` / `effective_assignee` dans les réponses).
 L'app ne publie **rien** sur les réseaux : elle range et planifie, l'utilisateur poste puis coche « posté ».
+Chaque nuit, la collecte des stats **repère aussi les posts TikTok / Instagram / YouTube** dont le texte reprend une publication
+prévue (légende, ou titre pour YouTube) : elle la coche « posté », avec son lien et sa date réelle de parution.
 
 ## Lancer le CLI (bash et PowerShell)
 
@@ -157,7 +159,9 @@ depot stats post <id|lien du post> --json            # détail d'un post + évol
 ## Précautions
 
 - Confirmation explicite avant `delete`, `rm-file`, `folder rm`, `account rm`, `people rm` et `archive`.
-- Archivage : posté sur **tous** ses comptes, un contenu perd ses fichiers après le délai réglé dans l'app (`depot me`) ;
-  fiche, légendes et dates restent (`get` : « retiré du stockage »). Exception : `depot keep-files <id>`.
+- Archivage : posté sur **tous** ses comptes, un contenu perd ses fichiers **dès que la collecte de la nuit a retrouvé ses posts
+  en ligne**, sinon après le délai réglé dans l'app (`depot me`) ; un contenu ajouté alors qu'il était déjà en ligne garde ce délai,
+  compté depuis son ajout. Fiche, légendes et dates restent (`get` : « retiré du stockage »). Exception : `depot keep-files <id>`.
+  Pour que le repérage marche, la légende enregistrée doit être celle qui sera publiée (le lien du post, s'il est donné, suffit aussi).
 - Dates `AAAA-MM-JJ`, heures `HH:MM`, heure de Paris.
 - Légendes longues ou avec guillemets : passe par `description_file` (fichier UTF-8 écrit avec Write) plutôt qu'en ligne de commande.
