@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, LoaderCircle, X } from "lucide-react";
+import { Check, Globe, LoaderCircle, X } from "lucide-react";
 import {
   useEffect,
   useRef,
@@ -12,6 +12,7 @@ import {
 } from "react";
 import { twMerge } from "tailwind-merge";
 import { PLATFORMS } from "@/lib/constants";
+import { PLATFORM_ICON_PATHS } from "@/lib/platform-icons";
 import type { Platform } from "@/lib/types";
 
 /** Concatène des classes Tailwind ; en cas de conflit (w-full / w-28…), la dernière gagne. */
@@ -253,19 +254,28 @@ export function PlatformBadge({
   className?: string;
 }) {
   const p = PLATFORMS[platform] ?? PLATFORMS.other;
+  const icon = PLATFORM_ICON_PATHS[platform];
   return (
     <span
       title={p.label}
+      role="img"
+      aria-label={p.label}
       className={cn(
-        "relative inline-flex shrink-0 items-center justify-center rounded-md font-bold tracking-tight ring-1 ring-black/5",
-        size === "sm" && "size-5 text-[9px]",
-        size === "md" && "size-7 text-[11px]",
-        size === "lg" && "size-9 text-xs",
+        "relative inline-flex shrink-0 items-center justify-center rounded-md ring-1 ring-black/5 dark:ring-white/20",
+        size === "sm" && "size-5",
+        size === "md" && "size-7",
+        size === "lg" && "size-9",
         className,
       )}
-      style={{ background: p.color, color: p.ink }}
+      style={{ background: p.bg ?? p.color, color: p.ink }}
     >
-      {p.short}
+      {icon ? (
+        <svg viewBox="0 0 24 24" aria-hidden="true" className="size-[62%]" fill="currentColor">
+          <path d={icon} />
+        </svg>
+      ) : (
+        <Globe className="size-[62%]" strokeWidth={2.2} aria-hidden="true" />
+      )}
       {posted && (
         <span className="absolute -right-1 -bottom-1 flex size-3.5 items-center justify-center rounded-full bg-success text-white ring-2 ring-surface">
           <Check className="size-2.5" strokeWidth={4} />

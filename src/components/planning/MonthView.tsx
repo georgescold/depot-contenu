@@ -162,7 +162,7 @@ export function MonthView({
                         background: `color-mix(in srgb, ${folderColor(index, i.content.folder_id)} 14%, transparent)`,
                       }}
                     >
-                      {i.account && <PlatformBadge platform={i.account.platform} size="sm" className="size-3.5 text-[7px]" />}
+                      {i.account && <PlatformBadge platform={i.account.platform} size="sm" className="size-3.5" />}
                       <span className="truncate">{i.content.title}</span>
                     </div>
                   ))}

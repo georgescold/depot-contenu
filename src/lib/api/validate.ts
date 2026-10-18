@@ -144,8 +144,6 @@ const PLATFORM_ALIASES: Record<string, Platform> = {
   insta: "instagram",
   tt: "tiktok",
   fb: "facebook",
-  li: "linkedin",
-  in: "linkedin",
   twitter: "x",
   th: "threads",
   pin: "pinterest",

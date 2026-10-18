@@ -3,7 +3,6 @@ export type Platform =
   | "instagram"
   | "tiktok"
   | "facebook"
-  | "linkedin"
   | "x"
   | "threads"
   | "pinterest"

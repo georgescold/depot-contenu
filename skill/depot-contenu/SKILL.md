@@ -131,7 +131,6 @@ depot archive <id> --yes                                # « libère la place »
 | Instagram | non | 2200 | Hook en 1ʳᵉ ligne (≈ 125 car. visibles) ; 3 à 5 hashtags ciblés en fin |
 | TikTok | non | 4000 | Court, accrocheur ; 3 à 5 hashtags |
 | Facebook | non | 63206 | Texte aéré, 1 à 3 hashtags |
-| LinkedIn | non | 3000 | Accroche en 2 lignes, paragraphes courts, 3 hashtags |
 | X | non | 280 | 1 ou 2 hashtags au plus |
 | Threads | non | 500 | Ton conversationnel, 1 hashtag |
 | Pinterest | ≤ 100 car. | 500 | Mots-clés descriptifs |

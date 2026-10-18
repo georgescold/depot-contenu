@@ -55,7 +55,7 @@ inconnue ou révoquée renvoie **401** (une clé révoquée ne peut pas être r�
   (`{ id, name }` ou `null`) et la personne effective = `{ id, name, source: "content"|"account"|"folder", folder_id? }` ou `null`.
 - **Dates** `AAAA-MM-JJ`, **heures** `HH:MM` (heure de Paris ; `9h30` et `HH:MM:SS` acceptés en entrée).
 - **Énumérations** : formats `video|short|carousel|photo|story|other` ; fichiers `video|thumbnail|photo|other` ;
-  plateformes `youtube|instagram|tiktok|facebook|linkedin|x|threads|pinterest|snapchat|other` ;
+  plateformes `youtube|instagram|tiktok|facebook|x|threads|pinterest|snapchat|other` ;
   statuts `draft|scheduled|late|partial|posted` (calculés par `contentStatus`).
 - `url` = page web du contenu : `${origin}/contenus/${id}` (origine = `APP_URL` si défini, sinon celle de la requête).
 - `warnings` : avertissements non bloquants (titre YouTube > 100 caractères, légende trop longue, **date déjà passée**…).

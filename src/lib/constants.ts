@@ -5,7 +5,9 @@ export interface PlatformInfo {
   /** Abréviation affichée dans le badge */
   short: string;
   color: string;
-  /** Couleur du texte sur le badge */
+  /** Fond du badge s'il diffère de la couleur unie (dégradé Instagram) */
+  bg?: string;
+  /** Couleur du logo sur le badge */
   ink: string;
   /** La plateforme a un champ « titre » distinct de la description */
   hasTitle: boolean;
@@ -14,15 +16,22 @@ export interface PlatformInfo {
 }
 
 export const PLATFORMS: Record<Platform, PlatformInfo> = {
-  youtube: { label: "YouTube", short: "YT", color: "#ff0033", ink: "#fff", hasTitle: true, limit: 5000 },
-  instagram: { label: "Instagram", short: "IG", color: "#d62976", ink: "#fff", hasTitle: false, limit: 2200 },
+  youtube: { label: "YouTube", short: "YT", color: "#ff0000", ink: "#fff", hasTitle: true, limit: 5000 },
+  instagram: {
+    label: "Instagram",
+    short: "IG",
+    color: "#e1306c",
+    bg: "radial-gradient(circle at 30% 107%, #fdf497 0%, #fdf497 5%, #fd5949 45%, #d6249f 60%, #285aeb 90%)",
+    ink: "#fff",
+    hasTitle: false,
+    limit: 2200,
+  },
   tiktok: { label: "TikTok", short: "TT", color: "#000000", ink: "#fff", hasTitle: false, limit: 4000 },
-  facebook: { label: "Facebook", short: "FB", color: "#1877f2", ink: "#fff", hasTitle: false, limit: 63206 },
-  linkedin: { label: "LinkedIn", short: "IN", color: "#0a66c2", ink: "#fff", hasTitle: false, limit: 3000 },
-  x: { label: "X", short: "X", color: "#0f1419", ink: "#fff", hasTitle: false, limit: 280 },
-  threads: { label: "Threads", short: "TH", color: "#101010", ink: "#fff", hasTitle: false, limit: 500 },
+  facebook: { label: "Facebook", short: "FB", color: "#0866ff", ink: "#fff", hasTitle: false, limit: 63206 },
+  x: { label: "X", short: "X", color: "#000000", ink: "#fff", hasTitle: false, limit: 280 },
+  threads: { label: "Threads", short: "TH", color: "#000000", ink: "#fff", hasTitle: false, limit: 500 },
   pinterest: { label: "Pinterest", short: "PI", color: "#e60023", ink: "#fff", hasTitle: true, limit: 500 },
-  snapchat: { label: "Snapchat", short: "SC", color: "#fffc00", ink: "#111", hasTitle: false, limit: 250 },
+  snapchat: { label: "Snapchat", short: "SC", color: "#fffc00", ink: "#000", hasTitle: false, limit: 250 },
   other: { label: "Autre", short: "•", color: "#64748b", ink: "#fff", hasTitle: true, limit: 10000 },
 };
 
