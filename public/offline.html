@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Hors connexion · Dépôt contenu</title>
+    <style>
+      :root {
+        --bg: #f4f5f7;
+        --surface: #ffffff;
+        --ink: #0f172a;
+        --muted: #64748b;
+        --accent: #4f46e5;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0b0d12;
+          --surface: #151821;
+          --ink: #e5e7eb;
+          --muted: #94a3b8;
+          --accent: #818cf8;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100dvh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px 16px;
+        background: var(--bg);
+        color: var(--ink);
+        font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        text-align: center;
+      }
+      main {
+        max-width: 360px;
+      }
+      img {
+        width: 64px;
+        height: 64px;
+        border-radius: 16px;
+      }
+      h1 {
+        margin: 16px 0 4px;
+        font-size: 20px;
+      }
+      p {
+        margin: 0;
+        color: var(--muted);
+      }
+      button {
+        margin-top: 20px;
+        height: 44px;
+        padding: 0 20px;
+        border: 0;
+        border-radius: 12px;
+        background: var(--accent);
+        color: #fff;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <img src="/icons/icon-192.png" alt="" />
+      <h1>Pas de connexion</h1>
+      <p>Dépôt contenu a besoin d'internet pour afficher tes contenus. La page se recharge toute seule dès que le réseau revient.</p>
+      <button type="button" onclick="location.reload()">Réessayer</button>
+    </main>
+    <script>
+      window.addEventListener("online", () => location.reload());
+    </script>
+  </body>
+</html>

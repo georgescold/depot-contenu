@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { InstallLoginCard } from "@/components/InstallApp";
 import { Button, Field, Input } from "@/components/ui";
 import { supabase } from "@/lib/supabase/browser";
 
@@ -108,6 +109,7 @@ export default function LoginPage() {
             )}
           </form>
         )}
+        {mode === "login" && <InstallLoginCard />}
       </div>
     </div>
   );

@@ -7,6 +7,7 @@ import { createContext, useCallback, useContext, useEffect, useState, type React
 import { supabase } from "@/lib/supabase/browser";
 import { DataProvider, useData } from "./data/DataProvider";
 import { FolderTreeNav } from "./FolderTreeNav";
+import { InstallBanner, InstallSidebarButton } from "./InstallApp";
 import { NewContentModal } from "./NewContentModal";
 import { ToastProvider } from "./Toast";
 import { Button, cn, Spinner } from "./ui";
@@ -153,6 +154,7 @@ function ShellUI({ children }: { children: ReactNode }) {
           </p>
         </div>
       )}
+      <InstallBanner />
       <div className="md:flex">
         {/* Barre latérale (ordinateur) */}
         <aside className="sticky top-0 hidden h-dvh w-64 shrink-0 flex-col border-r border-line bg-surface md:flex">
@@ -184,6 +186,7 @@ function ShellUI({ children }: { children: ReactNode }) {
             <p className="px-3 pb-2 text-[11px] font-semibold tracking-wider text-muted uppercase">Arborescence</p>
             <FolderTreeNav compact />
           </div>
+          <InstallSidebarButton />
         </aside>
 
         {/* Contenu */}

@@ -8,6 +8,7 @@ import { useToast } from "@/components/Toast";
 import { Button, Card, Field, IconButton, Input, Modal, Pill, SectionTitle, Select } from "@/components/ui";
 import { apiKeyDisplayPrefix, generateApiKey, hashApiKey } from "@/lib/apikey";
 import { AutoField } from "@/components/AutoField";
+import { InstallSection } from "@/components/InstallApp";
 import { ARCHIVE_DELAY_CHOICES, archiveDelayLabel } from "@/lib/archive-rules";
 import { FOLDER_COLORS, FREE_STORAGE_GB, MAX_FILE_MB } from "@/lib/constants";
 import { authedFetch } from "@/lib/client-fetch";
@@ -24,6 +25,7 @@ export default function SettingsPage() {
       <PageHeader title="Réglages" />
       <PageBody className="max-w-3xl space-y-10">
         <AccountSection />
+        <InstallSection />
         <PeopleSection />
         <TeamSection />
         <ApiKeysSection />
